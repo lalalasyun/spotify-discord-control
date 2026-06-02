@@ -195,7 +195,7 @@ bun install
 bun run deploy:worker
 ```
 
-The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, deploys the Worker with `bunx wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
+The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, configures a one-minute playback card refresh, deploys the Worker with `bunx wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
 
 After deploy:
 

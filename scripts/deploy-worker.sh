@@ -64,7 +64,7 @@ cat > "$config_file" <<JSON
     }
   ],
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["* * * * *"]
   }
 }
 JSON

@@ -159,11 +159,30 @@ async function handleComponentInteraction(interaction, env, ctx) {
     return json({ type: 7, data: withAllowedMentions(nextMessage) });
   }
 
-  await controlPlayback(env, action);
   const state = await fetchPlaybackState(env);
+  const messageTrackId = messageTrackIdFromInteraction(interaction);
+  const currentTrackId = displayTrack(state)?.id || '';
+  if (messageTrackId && currentTrackId && messageTrackId !== currentTrackId) {
+    ctx.waitUntil(refreshStoredCard(env, state));
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
+  }
+
+  let nextState = state;
+  let eventType = 'control';
+  try {
+    await controlPlayback(env, action, state);
+    nextState = await fetchPlaybackState(env);
+  } catch (error) {
+    console.error(`playback control failed: ${errorMessage(error)}`);
+    nextState = await fetchPlaybackState(env).catch(() => state);
+    eventType = 'control failed';
+  }
   return json({
     type: 7,
-    data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state)),
+    data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
   });
 }
 
@@ -416,8 +435,8 @@ async function fetchPlaybackState(env) {
   return normalizePlaybackState(response.body);
 }
 
-async function controlPlayback(env, action) {
-  const playback = (await spotifyApiFetch(env, '/v1/me/player')).body;
+async function controlPlayback(env, action, playbackState = null) {
+  const playback = playbackState?.raw || (await spotifyApiFetch(env, '/v1/me/player')).body;
   const deviceId = await resolveControlDeviceId(env, playback);
 
   if (action === 'play') {
@@ -484,6 +503,7 @@ function normalizePlaybackState(raw) {
       track: null,
       lastTrack: null,
       device: null,
+      raw: null,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -504,6 +524,7 @@ function normalizePlaybackState(raw) {
           isActive: Boolean(raw.device.is_active),
         }
       : null,
+    raw,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -638,6 +659,16 @@ function actionFromCustomId(customId) {
   return customId.startsWith(COMPONENT_PREFIX) ? customId.slice(COMPONENT_PREFIX.length) : '';
 }
 
+function messageTrackIdFromInteraction(interaction) {
+  const url = interaction?.message?.embeds?.[0]?.url || '';
+  return trackIdFromSpotifyUrl(url);
+}
+
+function trackIdFromSpotifyUrl(url) {
+  const match = String(url).match(/open\.spotify\.com\/track\/([^/?#]+)/);
+  return match?.[1] || '';
+}
+
 function cleanMessage(message) {
   return {
     content: message?.content || '',
@@ -679,9 +710,9 @@ function updateLikeButton(message, saved) {
   };
 }
 
-async function refreshStoredCard(env) {
+async function refreshStoredCard(env, state = null) {
   if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) return;
-  const state = await fetchPlaybackState(env);
+  state ??= await fetchPlaybackState(env);
   await upsertPlaybackMessage(
     env,
     await formatPlaybackMessage(env, 'refresh', state),
