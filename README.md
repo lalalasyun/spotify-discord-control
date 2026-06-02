@@ -142,8 +142,7 @@ It can also receive Discord slash commands over the Gateway after command regist
 DISCORD_GUILD_ID=your_server_id bun run register:discord -- --env .env
 ```
 
-This registers `/spotify ...` plus the top-level `/spotify-*` aliases listed in the
-Worker section below.
+This registers the grouped `/spotify ...` command.
 
 Create the Discord bot yourself in the Discord Developer Portal and invite it to your server with permissions to read/send messages and use message components.
 
@@ -158,8 +157,6 @@ It provides:
 - Workers KV token storage
 - Cron refresh of the configured playback card
 - `/spotify card`, `now`, `login`, `play`, `pause`, `next`, `prev`, `like`
-- top-level aliases: `/spotify-card`, `/spotify-now`, `/spotify-login`, `/spotify-play`,
-  `/spotify-pause`, `/spotify-next`, `/spotify-prev`, `/spotify-like`
 
 Create your Spotify app and Discord app yourself. In Spotify, add this redirect URI:
 

@@ -43,7 +43,7 @@ async function main() {
   }
 
   const target = guildId ? `guild ${guildId}` : 'global';
-  console.log(`registered /spotify commands and aliases (${target})`);
+  console.log(`registered /spotify command (${target})`);
 }
 
 function commands() {
@@ -53,10 +53,6 @@ function commands() {
       description: 'Control Spotify playback and show the current track.',
       options: SPOTIFY_SUBCOMMANDS.map(([name, description]) => subcommand(name, description)),
     },
-    ...SPOTIFY_SUBCOMMANDS.map(([name, description]) => ({
-      name: `spotify-${name}`,
-      description,
-    })),
   ];
 }
 
