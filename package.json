@@ -1,0 +1,21 @@
+{
+  "name": "spotify-discord-control",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Small Spotify OAuth PKCE CLI with optional Discord playback controls.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "spotify-oauth": "./src/bin/spotify-oauth.js",
+    "spotify-discord-bot": "./src/bin/spotify-discord-bot.js"
+  },
+  "scripts": {
+    "bootstrap": "scripts/bootstrap-oss.sh",
+    "serve": "node src/bin/spotify-oauth.js serve",
+    "discord": "node src/bin/spotify-discord-bot.js",
+    "check": "node --check src/bin/spotify-oauth.js && node --check src/bin/spotify-discord-bot.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

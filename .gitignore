@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+coverage/
+.tmp/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Symphony local runtime
+.symphony/
+.symphony-run/
