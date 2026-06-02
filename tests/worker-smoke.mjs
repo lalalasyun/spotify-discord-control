@@ -40,6 +40,7 @@ await testDiscordPing();
 await testInvalidDiscordSignature();
 await testSpotifyLoginCommand();
 await testUnauthorizedSpotifyCommandReturnsInteractionError();
+await testSpotifyNowRendersSavedLikeState();
 
 console.log('worker smoke tests passed');
 
@@ -98,6 +99,60 @@ async function testUnauthorizedSpotifyCommandReturnsInteractionError() {
   assert.match(payload.data.content, /Spotify is not authorized/);
 }
 
+async function testSpotifyNowRendersSavedLikeState() {
+  const savedEnv = {
+    ...env,
+    SPOTIFY_TOKENS: new MemoryKv()
+  };
+  await savedEnv.SPOTIFY_TOKENS.put('spotify:tokens', JSON.stringify({
+    accessToken: 'access-token',
+    refreshToken: 'refresh-token',
+    accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+  }));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'saved-track-id',
+          type: 'track',
+          name: 'Saved Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] }
+        }
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      assert.equal(url.searchParams.get('uris'), 'spotify:track:saved-track-id');
+      return jsonResponse([true]);
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  };
+
+  try {
+    const response = await worker.fetch(signedInteractionRequest({
+      type: 2,
+      data: {
+        name: 'spotify',
+        options: [{ type: 1, name: 'now' }]
+      }
+    }), savedEnv, ctx);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    const likeButton = payload.data.components[0].components[3];
+    assert.equal(likeButton.style, 3);
+    assert.deepEqual(likeButton.emoji, { name: '✔️' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 function signedInteractionRequest(payload) {
   const body = JSON.stringify(payload);
   const timestamp = '1760000000';
@@ -119,4 +174,11 @@ function signedInteractionRequest(payload) {
 
 function bytesToHex(bytes) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function jsonResponse(body) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
 }

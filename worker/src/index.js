@@ -52,7 +52,11 @@ export default {
 
     try {
       const state = await fetchPlaybackState(env);
-      await upsertPlaybackMessage(env, formatMessage('cron', state), displayTrack(state)?.id || 'none');
+      await upsertPlaybackMessage(
+        env,
+        await formatPlaybackMessage(env, 'cron', state),
+        displayTrack(state)?.id || 'none'
+      );
     } catch (error) {
       console.error(`scheduled refresh failed: ${errorMessage(error)}`);
     }
@@ -96,7 +100,7 @@ async function handleApplicationCommand(interaction, env, request) {
 
   if (subcommand === 'card' || subcommand === 'now') {
     const state = await fetchPlaybackState(env);
-    const message = formatMessage(subcommand, state);
+    const message = await formatPlaybackMessage(env, subcommand, state);
     if (subcommand === 'card' && env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
       const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none');
       return interactionMessage(`Playback card ${result.action}.`, true);
@@ -107,7 +111,10 @@ async function handleApplicationCommand(interaction, env, request) {
   if (PLAYBACK_ACTIONS.has(subcommand)) {
     await controlPlayback(env, subcommand);
     const state = await fetchPlaybackState(env);
-    return json({ type: 4, data: withAllowedMentions(formatMessage('control', state)) });
+    return json({
+      type: 4,
+      data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state))
+    });
   }
 
   if (subcommand === 'like') {
@@ -147,7 +154,10 @@ async function handleComponentInteraction(interaction, env, ctx) {
 
   await controlPlayback(env, action);
   const state = await fetchPlaybackState(env);
-  return json({ type: 7, data: withAllowedMentions(formatMessage('control', state)) });
+  return json({
+    type: 7,
+    data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state))
+  });
 }
 
 function verifyDiscordRequest(request, env, body) {
@@ -478,6 +488,29 @@ function formatMessage(eventType, state) {
   };
 }
 
+async function formatPlaybackMessage(env, eventType, state) {
+  const saved = await fetchTrackSaved(env, state);
+  return {
+    ...formatMessage(eventType, state),
+    components: buildControls(state, saved)
+  };
+}
+
+async function fetchTrackSaved(env, state) {
+  const track = displayTrack(state);
+  if (!track?.id) return null;
+  try {
+    const uri = `spotify:track:${track.id}`;
+    const response = await spotifyApiFetch(env, '/v1/me/library/contains', {
+      query: { uris: uri }
+    });
+    return response.body?.[0] === true;
+  } catch (error) {
+    console.error(`saved state check failed: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
 function buildControls(state, saved = null) {
   const toggleAction = state?.isPlaying ? 'pause' : 'play';
   const toggleEmoji = state?.isPlaying ? '⏸️' : '▶️';
@@ -572,7 +605,11 @@ function updateLikeButton(message, saved) {
 async function refreshStoredCard(env) {
   if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) return;
   const state = await fetchPlaybackState(env);
-  await upsertPlaybackMessage(env, formatMessage('refresh', state), displayTrack(state)?.id || 'none');
+  await upsertPlaybackMessage(
+    env,
+    await formatPlaybackMessage(env, 'refresh', state),
+    displayTrack(state)?.id || 'none'
+  );
 }
 
 async function upsertPlaybackMessage(env, message, trackId) {
