@@ -30,16 +30,6 @@ const signatureFile = path.join(stateDir, 'last-signature');
 const componentPrefix = 'spotify_oauth:v1:';
 const playbackActions = new Set(['prev', 'play', 'pause', 'next']);
 const actions = new Set([...playbackActions, 'like']);
-const commandAliases = new Map([
-  ['spotify-card', 'card'],
-  ['spotify-now', 'now'],
-  ['spotify-login', 'login'],
-  ['spotify-play', 'play'],
-  ['spotify-pause', 'pause'],
-  ['spotify-next', 'next'],
-  ['spotify-prev', 'prev'],
-  ['spotify-like', 'like'],
-]);
 
 if (!token || !channelId) {
   console.error('DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required.');
@@ -471,11 +461,7 @@ async function editInteractionResponse(interaction, message) {
 }
 
 function applicationCommandSubcommand(interaction) {
-  const commandName = interaction?.data?.name || 'spotify';
-  if (commandName === 'spotify') {
-    return interaction?.data?.options?.[0]?.name || 'card';
-  }
-  return commandAliases.get(commandName) || commandName;
+  return interaction?.data?.options?.[0]?.name || 'card';
 }
 
 async function handleApplicationCommand(interaction) {
@@ -611,12 +597,13 @@ async function getGatewayUrl() {
   return `${result.url || 'wss://gateway.discord.gg'}/?v=10&encoding=json`;
 }
 
-async function runGateway(signal) {
+async function runGateway(signal, gatewayUrl) {
   if (typeof WebSocket !== 'function') {
     throw new Error('WebSocket global is unavailable. Use Bun 1.3 or newer.');
   }
 
-  const socket = new WebSocket(await getGatewayUrl());
+  console.log('discord gateway connecting');
+  const socket = new WebSocket(gatewayUrl);
   let sequence = null;
   let heartbeatTimer = null;
 
@@ -647,6 +634,7 @@ async function runGateway(signal) {
           () => send(1, sequence),
           packet.d?.heartbeat_interval || 45_000,
         );
+        console.log('discord gateway hello');
         send(2, {
           token,
           intents: 1,
@@ -658,9 +646,15 @@ async function runGateway(signal) {
         });
         return;
       }
+      if (packet.t === 'READY') {
+        console.log(`discord gateway ready session=${packet.d?.session_id || 'unknown'}`);
+      }
       if (packet.op === 1) send(1, sequence);
       if (packet.op === 7 || packet.op === 9) socket.close(4000, 'reconnect');
       if (packet.t === 'INTERACTION_CREATE') {
+        console.log(
+          `discord interaction type=${packet.d?.type || 'unknown'} command=${packet.d?.data?.name || packet.d?.data?.custom_id || 'unknown'}`,
+        );
         handleInteraction(packet.d).catch((error) => {
           console.error(error instanceof Error ? error.message : String(error));
         });
@@ -670,17 +664,19 @@ async function runGateway(signal) {
       cleanup();
       reject(new Error('Discord gateway websocket error'));
     });
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event) => {
       cleanup();
+      console.error(`Discord gateway closed: ${event.code} ${event.reason || ''}`.trim());
       resolve();
     });
   });
 }
 
-async function maintainGateway(signal) {
+async function maintainGateway(signal, gatewayUrl) {
   while (!stopping && !signal.aborted) {
     try {
-      await runGateway(signal);
+      console.log('discord gateway loop start');
+      await runGateway(signal, gatewayUrl);
     } catch (error) {
       if (!stopping && !signal.aborted) {
         console.error(error instanceof Error ? error.message : String(error));
@@ -736,9 +732,12 @@ async function main() {
   if (state) {
     await handlePlaybackEvent('snapshot', { state });
   }
-  maintainGateway(controller.signal).catch((error) => {
+  const gatewayUrl = await getGatewayUrl();
+  console.log('discord gateway url fetched');
+  maintainGateway(controller.signal, gatewayUrl).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
   });
+  await sleep(2_000);
 
   while (!stopping) {
     try {

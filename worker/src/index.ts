@@ -17,16 +17,6 @@ const SCOPES = [
 ];
 const PLAYBACK_ACTIONS = new Set(['prev', 'play', 'pause', 'next']);
 const CONTROL_ACTIONS = new Set([...PLAYBACK_ACTIONS, 'like']);
-const COMMAND_ALIASES = new Map([
-  ['spotify-card', 'card'],
-  ['spotify-now', 'now'],
-  ['spotify-login', 'login'],
-  ['spotify-play', 'play'],
-  ['spotify-pause', 'pause'],
-  ['spotify-next', 'next'],
-  ['spotify-prev', 'prev'],
-  ['spotify-like', 'like'],
-]);
 
 export default {
   async fetch(request, env, ctx) {
@@ -142,11 +132,7 @@ async function handleApplicationCommand(interaction, env, request) {
 }
 
 function applicationCommandSubcommand(interaction) {
-  const commandName = interaction?.data?.name || 'spotify';
-  if (commandName === 'spotify') {
-    return interaction?.data?.options?.[0]?.name || 'card';
-  }
-  return COMMAND_ALIASES.get(commandName) || commandName;
+  return interaction?.data?.options?.[0]?.name || 'card';
 }
 
 async function handleComponentInteraction(interaction, env, ctx) {
