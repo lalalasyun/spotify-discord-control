@@ -15,6 +15,14 @@ bun run serve
 bun run discord
 ```
 
+Register Discord slash commands for the local Gateway bot:
+
+```bash
+DISCORD_GUILD_ID=your_server_id bun run register:discord -- --env .env
+```
+
+Omit `DISCORD_GUILD_ID` only when you want global commands and can wait for Discord propagation.
+
 ## Worker Runtime
 
 ```bash

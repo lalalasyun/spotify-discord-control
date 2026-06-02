@@ -112,6 +112,25 @@ test('unauthorized /spotify now returns an ephemeral interaction error', async (
   assert.match(payload.data.content, /Spotify is not authorized/);
 });
 
+test('top-level /spotify-now alias routes to the now command', async () => {
+  const env = testEnv();
+  const response = await worker.fetch(
+    signedInteractionRequest({
+      type: 2,
+      data: {
+        name: 'spotify-now',
+      },
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.type, 4);
+  assert.equal(payload.data.flags, 64);
+  assert.match(payload.data.content, /Spotify is not authorized/);
+});
+
 test('/spotify now renders saved like state for saved tracks', async () => {
   const env = testEnv();
   await env.SPOTIFY_TOKENS.put(
