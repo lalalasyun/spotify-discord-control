@@ -35,7 +35,7 @@ done
 
 if [[ -z "$kv_namespace_id" ]]; then
   echo "Creating Cloudflare KV namespace SPOTIFY_TOKENS..."
-  kv_output="$(npx wrangler kv namespace create SPOTIFY_TOKENS 2>&1 || true)"
+  kv_output="$(bunx wrangler kv namespace create SPOTIFY_TOKENS 2>&1 || true)"
   kv_namespace_id="$(printf '%s' "$kv_output" | grep -Eo '[0-9a-f]{32}' | head -1 || true)"
 fi
 
