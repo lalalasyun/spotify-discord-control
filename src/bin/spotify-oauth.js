@@ -42,6 +42,8 @@ Commands:
                 Spotify の再生を操作
   transfer <device_id>
                 再生デバイスを切り替え
+  device [device_id]
+                デバイス一覧表示または再生デバイス切り替え
   saved|like|unlike|toggle-like
                 現在の曲の library 保存状態を確認/変更
 
@@ -72,6 +74,13 @@ async function main() {
       return;
     case 'devices':
       await handleDevices(flags);
+      return;
+    case 'device':
+      if (args.length > 0) {
+        await handleTransfer(args, flags);
+      } else {
+        await handleDevices(flags);
+      }
       return;
     case 'serve':
       await handleServe(flags);
