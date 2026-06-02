@@ -3,14 +3,24 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const DISCORD_API = 'https://discord.com/api/v10';
+const SPOTIFY_SUBCOMMANDS = [
+  ['card', 'Post or refresh the configured playback card.'],
+  ['now', 'Show the current playback state here.'],
+  ['login', 'Get a Spotify authorization URL.'],
+  ['play', 'Resume playback.'],
+  ['pause', 'Pause playback.'],
+  ['next', 'Skip to the next track.'],
+  ['prev', 'Go back to the previous track.'],
+  ['like', 'Toggle saved status for the current track.'],
+];
 
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
   const envFile = flags.env || '.env.worker';
   const fileEnv = await readEnvFile(envFile);
   const env = { ...fileEnv, ...process.env };
-  const applicationId = requireValue(env.DISCORD_APPLICATION_ID, 'DISCORD_APPLICATION_ID');
   const botToken = requireValue(env.DISCORD_BOT_TOKEN, 'DISCORD_BOT_TOKEN');
+  const applicationId = env.DISCORD_APPLICATION_ID || (await fetchApplicationId(botToken));
   const guildId = env.DISCORD_GUILD_ID || '';
   const endpoint = guildId
     ? `/applications/${applicationId}/guilds/${guildId}/commands`
@@ -33,7 +43,7 @@ async function main() {
   }
 
   const target = guildId ? `guild ${guildId}` : 'global';
-  console.log(`registered /spotify commands (${target})`);
+  console.log(`registered /spotify commands and aliases (${target})`);
 }
 
 function commands() {
@@ -41,22 +51,29 @@ function commands() {
     {
       name: 'spotify',
       description: 'Control Spotify playback and show the current track.',
-      options: [
-        subcommand('card', 'Post or refresh the configured playback card.'),
-        subcommand('now', 'Show the current playback state here.'),
-        subcommand('login', 'Get a Spotify authorization URL.'),
-        subcommand('play', 'Resume playback.'),
-        subcommand('pause', 'Pause playback.'),
-        subcommand('next', 'Skip to the next track.'),
-        subcommand('prev', 'Go back to the previous track.'),
-        subcommand('like', 'Toggle saved status for the current track.'),
-      ],
+      options: SPOTIFY_SUBCOMMANDS.map(([name, description]) => subcommand(name, description)),
     },
+    ...SPOTIFY_SUBCOMMANDS.map(([name, description]) => ({
+      name: `spotify-${name}`,
+      description,
+    })),
   ];
 }
 
 function subcommand(name, description) {
   return { type: 1, name, description };
+}
+
+async function fetchApplicationId(botToken) {
+  const response = await fetch(`${DISCORD_API}/oauth2/applications/@me`, {
+    headers: { Authorization: `Bot ${botToken}` },
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Discord application lookup failed: ${response.status} ${body.slice(0, 500)}`);
+  }
+  const application = await response.json();
+  return requireValue(application.id, 'DISCORD_APPLICATION_ID');
 }
 
 function parseArgs(argv) {

@@ -30,6 +30,16 @@ const signatureFile = path.join(stateDir, 'last-signature');
 const componentPrefix = 'spotify_oauth:v1:';
 const playbackActions = new Set(['prev', 'play', 'pause', 'next']);
 const actions = new Set([...playbackActions, 'like']);
+const commandAliases = new Map([
+  ['spotify-card', 'card'],
+  ['spotify-now', 'now'],
+  ['spotify-login', 'login'],
+  ['spotify-play', 'play'],
+  ['spotify-pause', 'pause'],
+  ['spotify-next', 'next'],
+  ['spotify-prev', 'prev'],
+  ['spotify-like', 'like'],
+]);
 
 if (!token || !channelId) {
   console.error('DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required.');
@@ -214,6 +224,10 @@ function cleanMessage(message) {
     embeds: Array.isArray(message?.embeds) ? message.embeds : [],
     components: Array.isArray(message?.components) ? message.components : [],
   };
+}
+
+function withAllowedMentions(message) {
+  return { ...message, allowed_mentions: { parse: [] } };
 }
 
 function disablePlaybackButtons(message) {
@@ -422,7 +436,115 @@ async function acknowledgeInteraction(interaction) {
   });
 }
 
-async function handleInteraction(interaction) {
+async function deferInteraction(interaction, ephemeral = false) {
+  const data = ephemeral ? { flags: 64 } : {};
+  const response = await fetch(
+    `${DISCORD_API}/interactions/${interaction.id}/${interaction.token}/callback`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 5, data }),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Discord interaction defer failed: ${response.status} ${body.slice(0, 300)}`);
+  }
+}
+
+async function editInteractionResponse(interaction, message) {
+  const payload = typeof message === 'string' ? { content: message } : withAllowedMentions(message);
+  const response = await fetch(
+    `${DISCORD_API}/webhooks/${interaction.application_id}/${interaction.token}/messages/@original`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(
+      `Discord interaction response edit failed: ${response.status} ${body.slice(0, 300)}`,
+    );
+  }
+}
+
+function applicationCommandSubcommand(interaction) {
+  const commandName = interaction?.data?.name || 'spotify';
+  if (commandName === 'spotify') {
+    return interaction?.data?.options?.[0]?.name || 'card';
+  }
+  return commandAliases.get(commandName) || commandName;
+}
+
+async function handleApplicationCommand(interaction) {
+  const subcommand = applicationCommandSubcommand(interaction);
+  const ephemeral = subcommand === 'card' || subcommand === 'login';
+
+  try {
+    await deferInteraction(interaction, ephemeral);
+
+    if (subcommand === 'login') {
+      await editInteractionResponse(
+        interaction,
+        'Local mode uses the host Spotify OAuth session. Run `spotify-oauth login` on the host if authorization is needed.',
+      );
+      return;
+    }
+
+    if (subcommand === 'card' || subcommand === 'now') {
+      const state = await fetchFreshState();
+      const message = await formatPlaybackMessage(subcommand, state);
+      if (subcommand === 'card') {
+        const result = await upsertPlaybackMessage(message, displayTrack(state)?.id || 'none');
+        await editInteractionResponse(interaction, `Playback card ${result.action}.`);
+        return;
+      }
+      await editInteractionResponse(interaction, message);
+      return;
+    }
+
+    if (playbackActions.has(subcommand) || subcommand === 'like') {
+      const result: any = await runSpotify(subcommand);
+      if (!result.ok) {
+        await editInteractionResponse(
+          interaction,
+          `Spotify ${subcommand} failed: ${result.stderr || result.stdout || 'unknown error'}`,
+        );
+        return;
+      }
+
+      await sleep(750);
+      const state = await fetchFreshState();
+      if (subcommand === 'like') {
+        const parsed = safeJson(result.stdout);
+        await editInteractionResponse(interaction, {
+          ...formatMessage(parsed?.saved ? 'liked' : 'unliked', state),
+          components: buildControls(
+            state,
+            typeof parsed?.saved === 'boolean' ? parsed.saved : await fetchTrackSaved(state),
+          ),
+        });
+        return;
+      }
+
+      await editInteractionResponse(interaction, await formatPlaybackMessage('control', state));
+      return;
+    }
+
+    await editInteractionResponse(interaction, `Unknown command: ${subcommand}`);
+  } catch (error) {
+    await editInteractionResponse(
+      interaction,
+      error instanceof Error ? error.message : String(error),
+    ).catch((responseError) => {
+      console.error(responseError instanceof Error ? responseError.message : String(responseError));
+    });
+  }
+}
+
+async function handleComponentInteraction(interaction) {
   const action = actionFromCustomId(interaction?.data?.custom_id || '');
   if (!actions.has(action)) return;
 
@@ -463,6 +585,16 @@ async function handleInteraction(interaction) {
     console.error(
       `control ${action} refresh failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+}
+
+async function handleInteraction(interaction) {
+  if (interaction?.type === 2) {
+    await handleApplicationCommand(interaction);
+    return;
+  }
+  if (interaction?.type === 3) {
+    await handleComponentInteraction(interaction);
   }
 }
 

@@ -95,3 +95,14 @@ Then run `/spotify login`, open the authorization URL, and complete OAuth.
 - `/spotify next`
 - `/spotify prev`
 - `/spotify like`
+
+The deploy script also registers top-level aliases for faster command entry:
+
+- `/spotify-login`
+- `/spotify-card`
+- `/spotify-now`
+- `/spotify-play`
+- `/spotify-pause`
+- `/spotify-next`
+- `/spotify-prev`
+- `/spotify-like`
