@@ -60,8 +60,9 @@ The deploy script:
 
 1. Creates a KV namespace when `KV_NAMESPACE_ID` is absent.
 2. Writes `wrangler.generated.jsonc`.
-3. Runs `bunx wrangler deploy --secrets-file .env.worker`.
-4. Registers `/spotify` commands with Discord.
+3. Configures a one-minute scheduled refresh for the persistent playback card.
+4. Runs `bunx wrangler deploy --secrets-file .env.worker`.
+5. Registers `/spotify` commands with Discord.
 
 `wrangler.generated.jsonc` and `.env.worker` are ignored by git.
 

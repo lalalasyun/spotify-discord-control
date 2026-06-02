@@ -236,6 +236,148 @@ test('legacy raw refresh token in KV refreshes instead of throwing a JSON parse 
   }
 });
 
+test('stale playback card controls do not send Spotify playback commands', async () => {
+  const env = testEnv();
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+  await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'message-id');
+  await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
+
+  const originalFetch = globalThis.fetch;
+  const seenPaths: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenPaths.push(url.pathname);
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'current-track-id',
+          type: 'track',
+          name: 'Current Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await worker.fetch(
+      signedInteractionRequest({
+        type: 3,
+        data: { custom_id: 'spotify_worker:v1:pause' },
+        message: {
+          id: 'message-id',
+          content: '',
+          embeds: [{ url: 'https://open.spotify.com/track/old-track-id' }],
+          components: playbackComponents(false),
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.type, 7);
+    const buttons = payload.data.components[0].components;
+    assert.equal(buttons[0].disabled, true);
+    assert.equal(buttons[1].disabled, true);
+    assert.equal(buttons[2].disabled, true);
+    assert.equal(buttons[3].disabled ?? false, false);
+    assert.deepEqual(seenPaths, ['/v1/me/player']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('playback control failures refresh the card instead of leaving stale UI', async () => {
+  const env = testEnv();
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  let playerFetches = 0;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/v1/me/player') {
+      playerFetches += 1;
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'current-track-id',
+          type: 'track',
+          name: 'Current Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/player/pause') {
+      return jsonResponse(
+        {
+          error: {
+            status: 403,
+            message: 'Player command failed: Restriction violated',
+            reason: 'UNKNOWN',
+          },
+        },
+        403,
+      );
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await worker.fetch(
+      signedInteractionRequest({
+        type: 3,
+        data: { custom_id: 'spotify_worker:v1:pause' },
+        message: {
+          id: 'message-id',
+          content: '',
+          embeds: [{ url: 'https://open.spotify.com/track/current-track-id' }],
+          components: playbackComponents(true),
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.type, 7);
+    assert.equal(payload.data.embeds[0].title, 'Current Track');
+    assert.equal(payload.data.embeds[0].footer.text, 'control failed | worker');
+    assert.equal(playerFetches, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('/spotify now renders saved like state for saved tracks', async () => {
   const env = testEnv();
   await env.SPOTIFY_TOKENS.put(
@@ -317,9 +459,28 @@ function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function jsonResponse(body) {
+function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function playbackComponents(isPlaying: boolean) {
+  return [
+    {
+      type: 1,
+      components: [
+        { type: 2, custom_id: 'spotify_worker:v1:prev', style: 2, emoji: { name: '⏮️' } },
+        {
+          type: 2,
+          custom_id: `spotify_worker:v1:${isPlaying ? 'pause' : 'play'}`,
+          style: isPlaying ? 2 : 3,
+          emoji: { name: isPlaying ? '⏸️' : '▶️' },
+        },
+        { type: 2, custom_id: 'spotify_worker:v1:next', style: 2, emoji: { name: '⏭️' } },
+        { type: 2, custom_id: 'spotify_worker:v1:like', style: 2, emoji: { name: '➕' } },
+      ],
+    },
+  ];
 }
