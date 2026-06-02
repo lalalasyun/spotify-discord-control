@@ -31,3 +31,11 @@ Spotify OAuth PKCE で再生状態取得と再生操作を行い、任意で Dis
 - `.env`, token files, Discord bot token は git に入れない
 - OAuth access token / refresh token は標準出力に出さない
 - Doppler には app credentials を置けるが、OAuth token 本体はローカル保存を基本にする
+
+## Repository Operations
+
+- GitHub repo: <https://github.com/lalalasyun/spotify-discord-control>
+- Discord forum: <https://discord.com/channels/1476366741742293026/1511357187832676352>
+- Discord forum home post: <https://discord.com/channels/1476366741742293026/1511357330317643867>
+- Forum/channel name `spotify-discord-control` maps to `lalalasyun/spotify-discord-control`.
+- New implementation, fix, or operations work raised in the Discord forum should be turned into GitHub Issues in this repository.
