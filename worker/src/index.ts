@@ -17,6 +17,7 @@ const SCOPES = [
 ];
 const PLAYBACK_ACTIONS = new Set(['prev', 'play', 'pause', 'next']);
 const CONTROL_ACTIONS = new Set([...PLAYBACK_ACTIONS, 'like']);
+const LEGACY_SECRET_VALUE_PATTERN = /^[A-Za-z0-9_-]{20,512}$/;
 
 export default {
   async fetch(request, env, ctx) {
@@ -232,7 +233,7 @@ async function handleSpotifyCallback(request, env) {
   if (!code || !state) return new Response('Missing code or state.', { status: 400 });
 
   const stateKey = `spotify:oauth:state:${state}`;
-  const storedState = await env.SPOTIFY_TOKENS.get(stateKey, 'json');
+  const storedState = await loadOAuthState(env, stateKey, request);
   if (!storedState?.verifier || !storedState?.redirectUri) {
     return new Response('OAuth state expired or invalid. Run /spotify login again.', {
       status: 400,
@@ -250,6 +251,32 @@ async function handleSpotifyCallback(request, env) {
   return new Response('Spotify authorization complete. You can return to Discord.', {
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   });
+}
+
+async function loadOAuthState(env, stateKey, request) {
+  const value = await env.SPOTIFY_TOKENS.get(stateKey);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object') return parsed;
+    if (typeof parsed === 'string' && LEGACY_SECRET_VALUE_PATTERN.test(parsed)) {
+      return {
+        verifier: parsed,
+        redirectUri: spotifyRedirectUri(env, request),
+      };
+    }
+  } catch {
+    if (LEGACY_SECRET_VALUE_PATTERN.test(value)) {
+      return {
+        verifier: value,
+        redirectUri: spotifyRedirectUri(env, request),
+      };
+    }
+    console.error('OAuth state KV value is not valid JSON; ignoring it.');
+  }
+
+  return null;
 }
 
 async function exchangeAuthorizationCode(env, { code, redirectUri, codeVerifier }) {
@@ -320,7 +347,7 @@ function normalizeTokens(payload, fallbackRefreshToken) {
 async function getAccessToken(env) {
   requireEnv(env, 'SPOTIFY_CLIENT_ID');
   requireKv(env);
-  const tokens = await env.SPOTIFY_TOKENS.get(TOKEN_KEY, 'json');
+  const tokens = await loadStoredTokens(env);
   if (!tokens?.refreshToken) {
     throw new Error('Spotify is not authorized. Run /spotify login first.');
   }
@@ -335,6 +362,25 @@ async function getAccessToken(env) {
 
 async function saveTokens(env, tokens) {
   await env.SPOTIFY_TOKENS.put(TOKEN_KEY, JSON.stringify(tokens));
+}
+
+async function loadStoredTokens(env) {
+  const value = await env.SPOTIFY_TOKENS.get(TOKEN_KEY);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'string' && LEGACY_SECRET_VALUE_PATTERN.test(parsed)) {
+      return { refreshToken: parsed };
+    }
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    if (LEGACY_SECRET_VALUE_PATTERN.test(value)) {
+      return { refreshToken: value };
+    }
+    console.error('Spotify token KV value is not valid JSON; treating it as unauthorized.');
+    return null;
+  }
 }
 
 async function spotifyApiFetch(env, endpoint, options: any = {}) {
