@@ -65,17 +65,21 @@ async function handleDiscordInteraction(request, env, ctx) {
     return new Response('invalid request signature', { status: 401 });
   }
 
-  const interaction = JSON.parse(body);
-  if (interaction.type === 1) {
-    return json({ type: 1 });
-  }
+  try {
+    const interaction = JSON.parse(body);
+    if (interaction.type === 1) {
+      return json({ type: 1 });
+    }
 
-  if (interaction.type === 2) {
-    return handleApplicationCommand(interaction, env, request);
-  }
+    if (interaction.type === 2) {
+      return await handleApplicationCommand(interaction, env, request);
+    }
 
-  if (interaction.type === 3) {
-    return handleComponentInteraction(interaction, env, ctx);
+    if (interaction.type === 3) {
+      return await handleComponentInteraction(interaction, env, ctx);
+    }
+  } catch (error) {
+    return interactionMessage(errorMessage(error), true);
   }
 
   return interactionMessage('Unsupported interaction.', true);

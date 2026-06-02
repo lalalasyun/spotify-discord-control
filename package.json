@@ -15,6 +15,7 @@
     "discord": "node src/bin/spotify-discord-bot.js",
     "deploy:worker": "scripts/deploy-worker.sh",
     "register:discord": "node scripts/register-discord-commands.js",
+    "test": "node tests/worker-smoke.mjs",
     "check": "node --check src/bin/spotify-oauth.js && node --check src/bin/spotify-discord-bot.js && node --check worker/src/index.js && node --check scripts/register-discord-commands.js"
   },
   "engines": {
