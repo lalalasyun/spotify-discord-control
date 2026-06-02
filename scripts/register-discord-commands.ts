@@ -1,5 +1,4 @@
-#!/usr/bin/env node
-
+#!/usr/bin/env bun
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -21,14 +20,16 @@ async function main() {
     method: 'PUT',
     headers: {
       Authorization: `Bot ${botToken}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(commands())
+    body: JSON.stringify(commands()),
   });
 
   const body = await response.text();
   if (!response.ok) {
-    throw new Error(`Discord command registration failed: ${response.status} ${body.slice(0, 500)}`);
+    throw new Error(
+      `Discord command registration failed: ${response.status} ${body.slice(0, 500)}`,
+    );
   }
 
   const target = guildId ? `guild ${guildId}` : 'global';
@@ -36,20 +37,22 @@ async function main() {
 }
 
 function commands() {
-  return [{
-    name: 'spotify',
-    description: 'Control Spotify playback and show the current track.',
-    options: [
-      subcommand('card', 'Post or refresh the configured playback card.'),
-      subcommand('now', 'Show the current playback state here.'),
-      subcommand('login', 'Get a Spotify authorization URL.'),
-      subcommand('play', 'Resume playback.'),
-      subcommand('pause', 'Pause playback.'),
-      subcommand('next', 'Skip to the next track.'),
-      subcommand('prev', 'Go back to the previous track.'),
-      subcommand('like', 'Toggle saved status for the current track.')
-    ]
-  }];
+  return [
+    {
+      name: 'spotify',
+      description: 'Control Spotify playback and show the current track.',
+      options: [
+        subcommand('card', 'Post or refresh the configured playback card.'),
+        subcommand('now', 'Show the current playback state here.'),
+        subcommand('login', 'Get a Spotify authorization URL.'),
+        subcommand('play', 'Resume playback.'),
+        subcommand('pause', 'Pause playback.'),
+        subcommand('next', 'Skip to the next track.'),
+        subcommand('prev', 'Go back to the previous track.'),
+        subcommand('like', 'Toggle saved status for the current track.'),
+      ],
+    },
+  ];
 }
 
 function subcommand(name, description) {
@@ -57,7 +60,7 @@ function subcommand(name, description) {
 }
 
 function parseArgs(argv) {
-  const flags = {};
+  const flags: Record<string, string | boolean> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (!value.startsWith('--')) continue;
@@ -76,19 +79,22 @@ function parseArgs(argv) {
 async function readEnvFile(filePath) {
   try {
     const text = await readFile(path.resolve(filePath), 'utf8');
-    const env = {};
+    const env: Record<string, string> = {};
     for (const rawLine of text.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line || line.startsWith('#')) continue;
       const equalsIndex = line.indexOf('=');
       if (equalsIndex < 1) continue;
       const key = line.slice(0, equalsIndex).trim();
-      const value = line.slice(equalsIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+      const value = line
+        .slice(equalsIndex + 1)
+        .trim()
+        .replace(/^['"]|['"]$/g, '');
       env[key] = value;
     }
     return env;
   } catch (error) {
-    if (error?.code === 'ENOENT') return {};
+    if ((error as { code?: string })?.code === 'ENOENT') return {};
     throw error;
   }
 }

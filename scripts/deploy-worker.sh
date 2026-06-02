@@ -35,7 +35,7 @@ done
 
 if [[ -z "$kv_namespace_id" ]]; then
   echo "Creating Cloudflare KV namespace SPOTIFY_TOKENS..."
-  kv_output="$(npx wrangler kv namespace create SPOTIFY_TOKENS 2>&1 || true)"
+  kv_output="$(bunx wrangler kv namespace create SPOTIFY_TOKENS 2>&1 || true)"
   kv_namespace_id="$(printf '%s' "$kv_output" | grep -Eo '[0-9a-f]{32}' | head -1 || true)"
 fi
 
@@ -55,7 +55,7 @@ cat > "$config_file" <<JSON
 {
   "\$schema": "node_modules/wrangler/config-schema.json",
   "name": "$worker_name",
-  "main": "worker/src/index.js",
+  "main": "worker/src/index.ts",
   "compatibility_date": "2026-06-01",
   "kv_namespaces": [
     {
@@ -70,10 +70,10 @@ cat > "$config_file" <<JSON
 JSON
 
 echo "Deploying $worker_name with $config_file..."
-npx wrangler deploy --config "$config_file" --secrets-file "$env_file"
+bunx wrangler deploy --config "$config_file" --secrets-file "$env_file"
 
 echo "Registering Discord commands..."
-node scripts/register-discord-commands.js --env "$env_file"
+bun run scripts/register-discord-commands.ts --env "$env_file"
 
 cat <<EOF
 

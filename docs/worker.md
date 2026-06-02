@@ -52,15 +52,15 @@ Optional:
 ## Deploy
 
 ```bash
-npm install
-npm run deploy:worker
+bun install
+bun run deploy:worker
 ```
 
 The deploy script:
 
 1. Creates a KV namespace when `KV_NAMESPACE_ID` is absent.
 2. Writes `wrangler.generated.jsonc`.
-3. Runs `wrangler deploy --secrets-file .env.worker`.
+3. Runs `bunx wrangler deploy --secrets-file .env.worker`.
 4. Registers `/spotify` commands with Discord.
 
 `wrangler.generated.jsonc` and `.env.worker` are ignored by git.

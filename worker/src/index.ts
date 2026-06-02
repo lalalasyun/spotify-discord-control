@@ -13,7 +13,7 @@ const SCOPES = [
   'user-read-currently-playing',
   'user-modify-playback-state',
   'user-library-read',
-  'user-library-modify'
+  'user-library-modify',
 ];
 const PLAYBACK_ACTIONS = new Set(['prev', 'play', 'pause', 'next']);
 const CONTROL_ACTIONS = new Set([...PLAYBACK_ACTIONS, 'like']);
@@ -52,11 +52,15 @@ export default {
 
     try {
       const state = await fetchPlaybackState(env);
-      await upsertPlaybackMessage(env, formatMessage('cron', state), displayTrack(state)?.id || 'none');
+      await upsertPlaybackMessage(
+        env,
+        formatMessage('cron', state),
+        displayTrack(state)?.id || 'none',
+      );
     } catch (error) {
       console.error(`scheduled refresh failed: ${errorMessage(error)}`);
     }
-  }
+  },
 };
 
 async function handleDiscordInteraction(request, env, ctx) {
@@ -117,8 +121,8 @@ async function handleApplicationCommand(interaction, env, request) {
       type: 4,
       data: withAllowedMentions({
         ...formatMessage(result.saved ? 'liked' : 'unliked', state),
-        components: buildControls(state, result.saved)
-      })
+        components: buildControls(state, result.saved),
+      }),
     });
   }
 
@@ -135,7 +139,10 @@ async function handleComponentInteraction(interaction, env, ctx) {
   const lastMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
   const isStale = Boolean(messageId && lastMessageId && messageId !== lastMessageId);
   if (isStale && PLAYBACK_ACTIONS.has(action)) {
-    return json({ type: 7, data: withAllowedMentions(disablePlaybackButtons(interaction.message)) });
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
   }
 
   if (action === 'like') {
@@ -167,7 +174,7 @@ function verifyDiscordRequest(request, env, body) {
     return nacl.sign.detached.verify(
       new TextEncoder().encode(`${timestamp}${body}`),
       signatureBytes,
-      publicKeyBytes
+      publicKeyBytes,
     );
   } catch {
     return false;
@@ -184,11 +191,15 @@ async function createAuthorizeUrl(env, request) {
   const authorizeUrl = new URL('https://accounts.spotify.com/authorize');
   const redirectUri = spotifyRedirectUri(env, request);
 
-  await env.SPOTIFY_TOKENS.put(`spotify:oauth:state:${state}`, JSON.stringify({
-    verifier,
-    redirectUri,
-    createdAt: new Date().toISOString()
-  }), { expirationTtl: 600 });
+  await env.SPOTIFY_TOKENS.put(
+    `spotify:oauth:state:${state}`,
+    JSON.stringify({
+      verifier,
+      redirectUri,
+      createdAt: new Date().toISOString(),
+    }),
+    { expirationTtl: 600 },
+  );
 
   authorizeUrl.search = new URLSearchParams({
     client_id: env.SPOTIFY_CLIENT_ID,
@@ -197,7 +208,7 @@ async function createAuthorizeUrl(env, request) {
     code_challenge_method: 'S256',
     code_challenge: challenge,
     state,
-    scope: SCOPES.join(' ')
+    scope: SCOPES.join(' '),
   }).toString();
 
   return authorizeUrl.toString();
@@ -214,19 +225,21 @@ async function handleSpotifyCallback(request, env) {
   const stateKey = `spotify:oauth:state:${state}`;
   const storedState = await env.SPOTIFY_TOKENS.get(stateKey, 'json');
   if (!storedState?.verifier || !storedState?.redirectUri) {
-    return new Response('OAuth state expired or invalid. Run /spotify login again.', { status: 400 });
+    return new Response('OAuth state expired or invalid. Run /spotify login again.', {
+      status: 400,
+    });
   }
 
   const tokens = await exchangeAuthorizationCode(env, {
     code,
     redirectUri: storedState.redirectUri,
-    codeVerifier: storedState.verifier
+    codeVerifier: storedState.verifier,
   });
   await saveTokens(env, tokens);
   await env.SPOTIFY_TOKENS.delete(stateKey);
 
   return new Response('Spotify authorization complete. You can return to Discord.', {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   });
 }
 
@@ -235,7 +248,7 @@ async function exchangeAuthorizationCode(env, { code, redirectUri, codeVerifier 
     grant_type: 'authorization_code',
     code,
     redirect_uri: redirectUri,
-    code_verifier: codeVerifier
+    code_verifier: codeVerifier,
   });
   if (!env.SPOTIFY_CLIENT_SECRET) body.set('client_id', env.SPOTIFY_CLIENT_ID);
 
@@ -246,7 +259,7 @@ async function exchangeAuthorizationCode(env, { code, redirectUri, codeVerifier 
 async function refreshAccessToken(env, tokens) {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
-    refresh_token: tokens.refreshToken
+    refresh_token: tokens.refreshToken,
   });
   if (!env.SPOTIFY_CLIENT_SECRET) body.set('client_id', env.SPOTIFY_CLIENT_ID);
 
@@ -260,17 +273,19 @@ async function spotifyTokenRequest(env, body) {
   const response = await fetch(SPOTIFY_ACCOUNTS_API, {
     method: 'POST',
     headers: tokenRequestHeaders(env),
-    body
+    body,
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`Spotify token request failed: ${response.status} ${JSON.stringify(payload).slice(0, 300)}`);
+    throw new Error(
+      `Spotify token request failed: ${response.status} ${JSON.stringify(payload).slice(0, 300)}`,
+    );
   }
   return payload;
 }
 
 function tokenRequestHeaders(env) {
-  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
   if (env.SPOTIFY_CLIENT_SECRET) {
     headers.Authorization = `Basic ${btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`)}`;
   }
@@ -287,7 +302,9 @@ function normalizeTokens(payload, fallbackRefreshToken) {
     refreshToken,
     tokenType: payload.token_type || 'Bearer',
     scope: payload.scope || '',
-    accessTokenExpiresAt: new Date(Date.now() + Number(payload.expires_in || 3600) * 1000).toISOString()
+    accessTokenExpiresAt: new Date(
+      Date.now() + Number(payload.expires_in || 3600) * 1000,
+    ).toISOString(),
   };
 }
 
@@ -311,19 +328,20 @@ async function saveTokens(env, tokens) {
   await env.SPOTIFY_TOKENS.put(TOKEN_KEY, JSON.stringify(tokens));
 }
 
-async function spotifyApiFetch(env, endpoint, options = {}) {
+async function spotifyApiFetch(env, endpoint, options: any = {}) {
   const url = new URL(`${SPOTIFY_API}${endpoint}`);
   for (const [key, value] of Object.entries(options.query || {})) {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+    if (value !== undefined && value !== null && value !== '')
+      url.searchParams.set(key, String(value));
   }
 
   const response = await fetch(url, {
     method: options.method || 'GET',
     headers: {
       Authorization: `Bearer ${await getAccessToken(env)}`,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {})
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: options.body ? JSON.stringify(options.body) : undefined
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
 
   if (response.status === 204) {
@@ -351,7 +369,7 @@ async function controlPlayback(env, action) {
     await spotifyApiFetch(env, '/v1/me/player/play', {
       method: 'PUT',
       query: { device_id: deviceId },
-      body: {}
+      body: {},
     });
     return;
   }
@@ -359,14 +377,14 @@ async function controlPlayback(env, action) {
   if (action === 'pause') {
     await spotifyApiFetch(env, '/v1/me/player/pause', {
       method: 'PUT',
-      query: { device_id: deviceId }
+      query: { device_id: deviceId },
     });
     return;
   }
 
   await spotifyApiFetch(env, action === 'next' ? '/v1/me/player/next' : '/v1/me/player/previous', {
     method: 'POST',
-    query: { device_id: deviceId }
+    query: { device_id: deviceId },
   });
 }
 
@@ -387,13 +405,16 @@ async function toggleCurrentTrackSaved(env) {
   if (!track?.id) throw new Error('No current track is available.');
   const uri = `spotify:track:${track.id}`;
 
-  const saved = (await spotifyApiFetch(env, '/v1/me/library/contains', {
-    query: { uris: uri }
-  })).body?.[0] === true;
+  const saved =
+    (
+      await spotifyApiFetch(env, '/v1/me/library/contains', {
+        query: { uris: uri },
+      })
+    ).body?.[0] === true;
   const nextSaved = !saved;
   await spotifyApiFetch(env, '/v1/me/library', {
     method: nextSaved ? 'PUT' : 'DELETE',
-    query: { uris: uri }
+    query: { uris: uri },
   });
   return { saved: nextSaved, track };
 }
@@ -408,7 +429,7 @@ function normalizePlaybackState(raw) {
       track: null,
       lastTrack: null,
       device: null,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     };
   }
 
@@ -420,13 +441,15 @@ function normalizePlaybackState(raw) {
     progressMs: raw.progress_ms || 0,
     track: normalizeTrack(item),
     lastTrack: normalizeTrack(item),
-    device: raw.device ? {
-      id: raw.device.id || '',
-      name: raw.device.name || 'unknown device',
-      type: raw.device.type || 'unknown',
-      isActive: Boolean(raw.device.is_active)
-    } : null,
-    updatedAt: new Date().toISOString()
+    device: raw.device
+      ? {
+          id: raw.device.id || '',
+          name: raw.device.name || 'unknown device',
+          type: raw.device.type || 'unknown',
+          isActive: Boolean(raw.device.is_active),
+        }
+      : null,
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -441,8 +464,8 @@ function normalizeTrack(track) {
       : [],
     album: {
       name: track.album?.name || 'Unknown album',
-      images: Array.isArray(track.album?.images) ? track.album.images : []
-    }
+      images: Array.isArray(track.album?.images) ? track.album.images : [],
+    },
   };
 }
 
@@ -455,7 +478,7 @@ function formatMessage(eventType, state) {
   const spotifyUrl = track.id ? `https://open.spotify.com/track/${track.id}` : undefined;
   const artworkUrl = albumArtworkUrl(track);
 
-  const embed = {
+  const embed: any = {
     title: track.name || 'Unknown track',
     url: spotifyUrl,
     description: artists(track),
@@ -464,17 +487,17 @@ function formatMessage(eventType, state) {
       { name: 'Status', value: status, inline: true },
       { name: 'Position', value: position, inline: true },
       { name: 'Device', value: device, inline: true },
-      { name: 'Album', value: album, inline: false }
+      { name: 'Album', value: album, inline: false },
     ],
     footer: { text: `${eventType} | worker` },
-    timestamp: state?.updatedAt || undefined
+    timestamp: state?.updatedAt || undefined,
   };
   if (artworkUrl) embed.image = { url: artworkUrl };
 
   return {
     content: '',
     embeds: [embed],
-    components: buildControls(state)
+    components: buildControls(state),
   };
 }
 
@@ -483,21 +506,28 @@ function buildControls(state, saved = null) {
   const toggleEmoji = state?.isPlaying ? '⏸️' : '▶️';
   const likeDisabled = !displayTrack(state)?.id;
 
-  return [{
-    type: 1,
-    components: [
-      { type: 2, custom_id: `${COMPONENT_PREFIX}prev`, style: 2, emoji: { name: '⏮️' } },
-      { type: 2, custom_id: `${COMPONENT_PREFIX}${toggleAction}`, style: state?.isPlaying ? 2 : 3, emoji: { name: toggleEmoji } },
-      { type: 2, custom_id: `${COMPONENT_PREFIX}next`, style: 2, emoji: { name: '⏭️' } },
-      {
-        type: 2,
-        custom_id: `${COMPONENT_PREFIX}like`,
-        style: saved === true ? 3 : 2,
-        emoji: { name: saved === true ? '✔️' : '➕' },
-        disabled: likeDisabled
-      }
-    ]
-  }];
+  return [
+    {
+      type: 1,
+      components: [
+        { type: 2, custom_id: `${COMPONENT_PREFIX}prev`, style: 2, emoji: { name: '⏮️' } },
+        {
+          type: 2,
+          custom_id: `${COMPONENT_PREFIX}${toggleAction}`,
+          style: state?.isPlaying ? 2 : 3,
+          emoji: { name: toggleEmoji },
+        },
+        { type: 2, custom_id: `${COMPONENT_PREFIX}next`, style: 2, emoji: { name: '⏭️' } },
+        {
+          type: 2,
+          custom_id: `${COMPONENT_PREFIX}like`,
+          style: saved === true ? 3 : 2,
+          emoji: { name: saved === true ? '✔️' : '➕' },
+          disabled: likeDisabled,
+        },
+      ],
+    },
+  ];
 }
 
 function displayTrack(state) {
@@ -512,7 +542,9 @@ function artists(track) {
 }
 
 function albumArtworkUrl(track) {
-  const images = Array.isArray(track?.album?.images) ? track.album.images.filter((image) => image?.url) : [];
+  const images = Array.isArray(track?.album?.images)
+    ? track.album.images.filter((image) => image?.url)
+    : [];
   return images.sort((a, b) => (b?.width || 0) - (a?.width || 0))[0]?.url || '';
 }
 
@@ -532,7 +564,7 @@ function cleanMessage(message) {
   return {
     content: message?.content || '',
     embeds: Array.isArray(message?.embeds) ? message.embeds : [],
-    components: Array.isArray(message?.components) ? message.components : []
+    components: Array.isArray(message?.components) ? message.components : [],
   };
 }
 
@@ -547,8 +579,8 @@ function disablePlaybackButtons(message) {
             const action = actionFromCustomId(component?.custom_id || '');
             return PLAYBACK_ACTIONS.has(action) ? { ...component, disabled: true } : component;
           })
-        : row?.components
-    }))
+        : row?.components,
+    })),
   };
 }
 
@@ -564,26 +596,39 @@ function updateLikeButton(message, saved) {
             if (action !== 'like') return component;
             return { ...component, style: saved ? 3 : 2, emoji: { name: saved ? '✔️' : '➕' } };
           })
-        : row?.components
-    }))
+        : row?.components,
+    })),
   };
 }
 
 async function refreshStoredCard(env) {
   if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) return;
   const state = await fetchPlaybackState(env);
-  await upsertPlaybackMessage(env, formatMessage('refresh', state), displayTrack(state)?.id || 'none');
+  await upsertPlaybackMessage(
+    env,
+    formatMessage('refresh', state),
+    displayTrack(state)?.id || 'none',
+  );
 }
 
 async function upsertPlaybackMessage(env, message, trackId) {
   const lastMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
   const lastTrackId = await env.SPOTIFY_TOKENS.get(TRACK_ID_KEY);
 
-  if (lastMessageId && lastTrackId === trackId && await editMessage(env, lastMessageId, message)) {
+  if (
+    lastMessageId &&
+    lastTrackId === trackId &&
+    (await editMessage(env, lastMessageId, message))
+  ) {
     return { action: 'edited', messageId: lastMessageId };
   }
 
-  const createdMessage = await discordRequest(env, 'POST', `/channels/${env.DISCORD_CHANNEL_ID}/messages`, message);
+  const createdMessage = await discordRequest(
+    env,
+    'POST',
+    `/channels/${env.DISCORD_CHANNEL_ID}/messages`,
+    message,
+  );
   if (lastMessageId && lastMessageId !== createdMessage.id) {
     const previous = await fetchMessage(env, lastMessageId);
     if (!previous?.unavailable) {
@@ -597,12 +642,24 @@ async function upsertPlaybackMessage(env, message, trackId) {
 }
 
 async function editMessage(env, messageId, message) {
-  const result = await discordRequest(env, 'PATCH', `/channels/${env.DISCORD_CHANNEL_ID}/messages/${messageId}`, message, [403, 404]);
+  const result = await discordRequest(
+    env,
+    'PATCH',
+    `/channels/${env.DISCORD_CHANNEL_ID}/messages/${messageId}`,
+    message,
+    [403, 404],
+  );
   return !result?.unavailable;
 }
 
 async function fetchMessage(env, messageId) {
-  return discordRequest(env, 'GET', `/channels/${env.DISCORD_CHANNEL_ID}/messages/${messageId}`, null, [403, 404]);
+  return discordRequest(
+    env,
+    'GET',
+    `/channels/${env.DISCORD_CHANNEL_ID}/messages/${messageId}`,
+    null,
+    [403, 404],
+  );
 }
 
 async function discordRequest(env, method, endpoint, payload = null, softStatuses = []) {
@@ -610,9 +667,9 @@ async function discordRequest(env, method, endpoint, payload = null, softStatuse
     method,
     headers: {
       Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    body: payload ? JSON.stringify(withAllowedMentions(payload)) : undefined
+    body: payload ? JSON.stringify(withAllowedMentions(payload)) : undefined,
   });
 
   if (softStatuses.includes(response.status)) {
@@ -621,7 +678,9 @@ async function discordRequest(env, method, endpoint, payload = null, softStatuse
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Discord ${method} ${endpoint} failed: ${response.status} ${body.slice(0, 300)}`);
+    throw new Error(
+      `Discord ${method} ${endpoint} failed: ${response.status} ${body.slice(0, 300)}`,
+    );
   }
 
   const text = await response.text();
@@ -634,15 +693,15 @@ function interactionMessage(content, ephemeral = false) {
     data: {
       content,
       flags: ephemeral ? 64 : undefined,
-      allowed_mentions: { parse: [] }
-    }
+      allowed_mentions: { parse: [] },
+    },
   });
 }
 
 function withAllowedMentions(message) {
   return {
     ...message,
-    allowed_mentions: { parse: [] }
+    allowed_mentions: { parse: [] },
   };
 }
 
@@ -667,7 +726,7 @@ function requireKv(env) {
 function json(payload, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 

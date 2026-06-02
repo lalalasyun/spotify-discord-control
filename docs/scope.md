@@ -2,7 +2,7 @@
 
 ## Included
 
-- Node.js 22+ の標準 API を中心に実装する
+- Bun 1.3+ と TypeScript を中心に実装する
 - OAuth Authorization Code with PKCE
 - Redirect URI の既定案: `http://127.0.0.1:8787/callback`
 - Spotify playback state API
@@ -34,7 +34,7 @@ user-library-modify
 
 ## Acceptance Criteria
 
-- A user can clone the repo, fill `.env`, and run `npm run bootstrap -- --login`
+- A user can clone the repo, fill `.env`, and run `bun run bootstrap -- --login`
 - CLI syntax checks pass
 - Public docs contain no private hostnames or personal environment assumptions
 - Discord integration only needs bot token, channel id, and the local playback API
