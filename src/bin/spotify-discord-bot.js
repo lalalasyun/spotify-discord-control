@@ -349,6 +349,18 @@ async function fetchFreshState() {
   return payload.state;
 }
 
+async function waitForFreshState(signal) {
+  while (!signal.aborted) {
+    try {
+      return await fetchFreshState();
+    } catch (error) {
+      console.error(`playback API unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      await sleep(5_000);
+    }
+  }
+  return null;
+}
+
 function runSpotify(action, trackId = '') {
   const command = action === 'like' ? 'toggle-like' : action;
   const env = { ...process.env };
@@ -555,8 +567,10 @@ async function main() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  const state = await fetchFreshState();
-  await handlePlaybackEvent('snapshot', { state });
+  const state = await waitForFreshState(controller.signal);
+  if (state) {
+    await handlePlaybackEvent('snapshot', { state });
+  }
   maintainGateway(controller.signal).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
   });
