@@ -8,11 +8,16 @@ import { fileURLToPath } from 'node:url';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const token = process.env.DISCORD_BOT_TOKEN || '';
-const channelId = process.env.DISCORD_CHANNEL_ID || process.env.SPOTIFY_DISCORD_CHANNEL_ID || '';
+const channelId = process.env.DISCORD_CHANNEL_ID ||
+  process.env.SPOTIFY_DISCORD_CHANNEL_ID ||
+  process.env.SPOTIFY_PLAYBACK_DISCORD_CHANNEL_ID ||
+  '';
 const apiUrl = (process.env.SPOTIFY_PLAYBACK_API_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '');
 const stateDir = process.env.SPOTIFY_DISCORD_STATE_DIR
   ? path.resolve(process.env.SPOTIFY_DISCORD_STATE_DIR)
-  : path.join(os.homedir(), '.local', 'state', 'spotify-oauth-cli-discord');
+  : process.env.SPOTIFY_PLAYBACK_STATE_DIR
+    ? path.resolve(process.env.SPOTIFY_PLAYBACK_STATE_DIR)
+    : path.join(os.homedir(), '.local', 'state', 'spotify-oauth-cli-discord');
 const cliPath = process.env.SPOTIFY_OAUTH_COMMAND || fileURLToPath(new URL('./spotify-oauth.js', import.meta.url));
 const messageIdFile = path.join(stateDir, 'last-message-id');
 const trackIdFile = path.join(stateDir, 'last-track-id');
@@ -217,6 +222,27 @@ function disablePlaybackButtons(message) {
   };
 }
 
+function updateLikeButton(message, saved) {
+  const cleaned = cleanMessage(message);
+  return {
+    ...cleaned,
+    components: cleaned.components.map((row) => ({
+      ...row,
+      components: Array.isArray(row?.components)
+        ? row.components.map((component) => {
+            const action = actionFromCustomId(component?.custom_id || '');
+            if (action !== 'like') return component;
+            return {
+              ...component,
+              style: saved ? 3 : 2,
+              emoji: { name: saved ? '✔️' : '➕' }
+            };
+          })
+        : row?.components
+    }))
+  };
+}
+
 function actionFromCustomId(customId) {
   return customId.startsWith(componentPrefix) ? customId.slice(componentPrefix.length) : '';
 }
@@ -383,11 +409,27 @@ async function handleInteraction(interaction) {
   const targetMessageId = messageId || lastMessageId;
   if (!targetMessageId) return;
 
+  if (action === 'like') {
+    const parsed = safeJson(result.stdout);
+    if (parsed && typeof parsed.saved === 'boolean') {
+      await editMessage(targetMessageId, updateLikeButton(interaction.message, parsed.saved));
+      return;
+    }
+  }
+
   try {
     const state = await fetchFreshState();
     await editMessage(targetMessageId, formatMessage('control', state));
   } catch (error) {
     console.error(`control ${action} refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function safeJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
