@@ -11,6 +11,7 @@ Spotify 公式 Web API と OAuth PKCE で、現在の再生状態取得、再生
 - Server-Sent Events: `GET /events`
 - Discord bot with playback buttons
 - env file or Doppler based setup
+- Optional Cloudflare Worker deployment with Discord Interactions
 
 ## Requirements
 
@@ -18,6 +19,7 @@ Spotify 公式 Web API と OAuth PKCE で、現在の再生状態取得、再生
 - Spotify account
 - Spotify Developer App
 - Discord bot and target channel, if you use Discord integration
+- Cloudflare account, if you use Worker deployment
 
 Spotify playback control requires an active Spotify device. Some playback API operations require Spotify Premium.
 
@@ -135,6 +137,66 @@ The bot posts a playback card to `DISCORD_CHANNEL_ID` and listens for button int
 
 Create the Discord bot yourself in the Discord Developer Portal and invite it to your server with permissions to read/send messages and use message components.
 
+## Cloudflare Worker Setup
+
+The Worker mode is for users who want a hosted Discord Interactions webhook instead of a long-running local Discord Gateway process.
+
+It provides:
+
+- `POST /discord/interactions` for Discord slash commands and buttons
+- `GET /spotify/callback` for Spotify OAuth PKCE callback
+- Workers KV token storage
+- Cron refresh of the configured playback card
+- `/spotify card`, `now`, `login`, `play`, `pause`, `next`, `prev`, `like`
+
+Create your Spotify app and Discord app yourself. In Spotify, add this redirect URI:
+
+```txt
+https://spotify-discord-control.YOUR_SUBDOMAIN.workers.dev/spotify/callback
+```
+
+In Discord, the Interactions Endpoint URL will be:
+
+```txt
+https://spotify-discord-control.YOUR_SUBDOMAIN.workers.dev/discord/interactions
+```
+
+Then deploy:
+
+```bash
+cp .env.worker.example .env.worker
+```
+
+Edit `.env.worker`:
+
+```env
+WORKER_NAME=spotify-discord-control
+PUBLIC_BASE_URL=https://spotify-discord-control.YOUR_SUBDOMAIN.workers.dev
+SPOTIFY_CLIENT_ID=your_spotify_client_id
+DISCORD_APPLICATION_ID=your_discord_application_id
+DISCORD_PUBLIC_KEY=your_discord_public_key
+DISCORD_BOT_TOKEN=your_discord_bot_token
+DISCORD_CHANNEL_ID=your_discord_channel_id
+```
+
+Run the one-command deploy:
+
+```bash
+npm install
+npm run deploy:worker
+```
+
+The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, deploys the Worker with `wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
+
+After deploy:
+
+1. Set the Discord Interactions Endpoint URL printed by the script.
+2. Run `/spotify login` in Discord.
+3. Open the Spotify authorization URL and complete OAuth.
+4. Run `/spotify card`.
+
+For fast command iteration during setup, set `DISCORD_GUILD_ID` in `.env.worker`. Omit it for global commands.
+
 ## Hosting
 
 Hosting is intentionally left to the user. Common options:
@@ -142,6 +204,7 @@ Hosting is intentionally left to the user. Common options:
 - systemd user services
 - Docker or compose wrapper
 - tmux/screen
+- Cloudflare Workers, using `npm run deploy:worker`
 - any process manager that can run two commands:
   - `npm run serve`
   - `npm run discord`

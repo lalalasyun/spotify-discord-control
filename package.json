@@ -13,9 +13,18 @@
     "bootstrap": "scripts/bootstrap-oss.sh",
     "serve": "node src/bin/spotify-oauth.js serve",
     "discord": "node src/bin/spotify-discord-bot.js",
-    "check": "node --check src/bin/spotify-oauth.js && node --check src/bin/spotify-discord-bot.js"
+    "deploy:worker": "scripts/deploy-worker.sh",
+    "register:discord": "node scripts/register-discord-commands.js",
+    "test": "node tests/worker-smoke.mjs",
+    "check": "node --check src/bin/spotify-oauth.js && node --check src/bin/spotify-discord-bot.js && node --check worker/src/index.js && node --check scripts/register-discord-commands.js"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.96.0"
   }
 }
