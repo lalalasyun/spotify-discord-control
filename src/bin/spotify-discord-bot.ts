@@ -115,7 +115,7 @@ function stateSignature(eventType, state) {
   return `${eventType}:${playback}:${playing}:${trackId}:${deviceId}`;
 }
 
-function buildControls(state) {
+function buildControls(state, saved = null) {
   const toggleAction = state?.isPlaying ? 'pause' : 'play';
   const toggleEmoji = state?.isPlaying ? '⏸️' : '▶️';
   const likeDisabled = !displayTrack(state)?.id;
@@ -145,8 +145,8 @@ function buildControls(state) {
         {
           type: 2,
           custom_id: `${componentPrefix}like`,
-          style: 2,
-          emoji: { name: '➕' },
+          style: saved === true ? 3 : 2,
+          emoji: { name: saved === true ? '✔️' : '➕' },
           disabled: likeDisabled,
         },
       ],
@@ -186,6 +186,26 @@ function formatMessage(eventType, state) {
     embeds: [embed],
     components: buildControls(state),
   };
+}
+
+async function formatPlaybackMessage(eventType, state) {
+  const saved = await fetchTrackSaved(state);
+  return {
+    ...formatMessage(eventType, state),
+    components: buildControls(state, saved),
+  };
+}
+
+async function fetchTrackSaved(state) {
+  const trackId = displayTrack(state)?.id || '';
+  if (!trackId) return null;
+  const result: any = await runSpotify('saved', trackId);
+  if (!result.ok) {
+    console.error(`saved state check failed: ${result.stderr || result.stdout || 'unknown error'}`);
+    return null;
+  }
+  const parsed = safeJson(result.stdout);
+  return typeof parsed?.saved === 'boolean' ? parsed.saved : null;
 }
 
 function cleanMessage(message) {
@@ -334,7 +354,10 @@ async function handlePlaybackEvent(eventType, payload) {
   if (signature === (await readLastSignature())) return;
 
   const trackId = displayTrack(state)?.id || 'none';
-  const result = await upsertPlaybackMessage(formatMessage(eventType, state), trackId);
+  const result = await upsertPlaybackMessage(
+    await formatPlaybackMessage(eventType, state),
+    trackId,
+  );
   await writeLastSignature(signature);
   console.log(
     `${result.action} ${eventType} version=${state.version ?? 'unknown'} message=${result.messageId}`,
@@ -435,7 +458,7 @@ async function handleInteraction(interaction) {
 
   try {
     const state = await fetchFreshState();
-    await editMessage(targetMessageId, formatMessage('control', state));
+    await editMessage(targetMessageId, await formatPlaybackMessage('control', state));
   } catch (error) {
     console.error(
       `control ${action} refresh failed: ${error instanceof Error ? error.message : String(error)}`,
