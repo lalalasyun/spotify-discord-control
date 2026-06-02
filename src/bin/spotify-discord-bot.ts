@@ -1,6 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
-
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -165,7 +163,7 @@ function formatMessage(eventType, state) {
   const spotifyUrl = track.id ? `https://open.spotify.com/track/${track.id}` : undefined;
   const artworkUrl = albumArtworkUrl(track);
 
-  const embed = {
+  const embed: any = {
     title: track.name || 'Unknown track',
     url: spotifyUrl,
     description: artists(track),
@@ -415,7 +413,7 @@ async function handleInteraction(interaction) {
     return;
   }
 
-  const result = await runSpotify(
+  const result: any = await runSpotify(
     action,
     action === 'like' ? trackIdFromMessage(interaction.message) : '',
   );
@@ -473,7 +471,7 @@ async function runGateway(signal) {
     }
   };
 
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       signal.removeEventListener('abort', abort);
@@ -548,7 +546,7 @@ async function consumeEvents(signal) {
   let currentEvent = 'message';
   let currentData = '';
 
-  for await (const chunk of response.body) {
+  for await (const chunk of response.body as any) {
     buffer += decoder.decode(chunk, { stream: true });
     let splitIndex = buffer.indexOf('\n');
     while (splitIndex >= 0) {

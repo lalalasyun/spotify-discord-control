@@ -1,5 +1,3 @@
-// @ts-nocheck
-
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import nacl from 'tweetnacl';
@@ -8,21 +6,23 @@ import worker from '../worker/src/index';
 const keyPair = nacl.sign.keyPair();
 
 class MemoryKv {
+  values: Map<string, string>;
+
   constructor() {
     this.values = new Map();
   }
 
-  async get(key, type = 'text') {
+  async get(key: string, type = 'text') {
     const value = this.values.get(key) ?? null;
     if (value === null) return null;
     return type === 'json' ? JSON.parse(value) : value;
   }
 
-  async put(key, value) {
+  async put(key: string, value: string) {
     this.values.set(key, value);
   }
 
-  async delete(key) {
+  async delete(key: string) {
     this.values.delete(key);
   }
 }
@@ -131,6 +131,6 @@ function signedInteractionRequest(payload) {
   });
 }
 
-function bytesToHex(bytes) {
+function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }

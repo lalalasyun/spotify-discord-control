@@ -1,4 +1,3 @@
-// @ts-nocheck
 import nacl from 'tweetnacl';
 
 const DISCORD_API = 'https://discord.com/api/v10';
@@ -286,7 +285,7 @@ async function spotifyTokenRequest(env, body) {
 }
 
 function tokenRequestHeaders(env) {
-  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
   if (env.SPOTIFY_CLIENT_SECRET) {
     headers.Authorization = `Basic ${btoa(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`)}`;
   }
@@ -329,10 +328,11 @@ async function saveTokens(env, tokens) {
   await env.SPOTIFY_TOKENS.put(TOKEN_KEY, JSON.stringify(tokens));
 }
 
-async function spotifyApiFetch(env, endpoint, options = {}) {
+async function spotifyApiFetch(env, endpoint, options: any = {}) {
   const url = new URL(`${SPOTIFY_API}${endpoint}`);
   for (const [key, value] of Object.entries(options.query || {})) {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
+    if (value !== undefined && value !== null && value !== '')
+      url.searchParams.set(key, String(value));
   }
 
   const response = await fetch(url, {
@@ -478,7 +478,7 @@ function formatMessage(eventType, state) {
   const spotifyUrl = track.id ? `https://open.spotify.com/track/${track.id}` : undefined;
   const artworkUrl = albumArtworkUrl(track);
 
-  const embed = {
+  const embed: any = {
     title: track.name || 'Unknown track',
     url: spotifyUrl,
     description: artists(track),

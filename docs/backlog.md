@@ -4,7 +4,7 @@
 
 - [ ] Add systemd user service examples
 - [ ] Add Docker/compose example
-- [ ] Tighten migrated TypeScript files from `@ts-nocheck` toward explicit runtime types
+- [ ] Tighten migrated TypeScript files from broad runtime types toward explicit Spotify and Discord payload types
 - [ ] Add integration tests with mocked Spotify and Discord APIs
 
 ## Later

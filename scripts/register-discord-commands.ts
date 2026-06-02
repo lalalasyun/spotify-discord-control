@@ -1,6 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
-
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -62,7 +60,7 @@ function subcommand(name, description) {
 }
 
 function parseArgs(argv) {
-  const flags = {};
+  const flags: Record<string, string | boolean> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (!value.startsWith('--')) continue;
@@ -81,7 +79,7 @@ function parseArgs(argv) {
 async function readEnvFile(filePath) {
   try {
     const text = await readFile(path.resolve(filePath), 'utf8');
-    const env = {};
+    const env: Record<string, string> = {};
     for (const rawLine of text.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line || line.startsWith('#')) continue;
@@ -96,7 +94,7 @@ async function readEnvFile(filePath) {
     }
     return env;
   } catch (error) {
-    if (error?.code === 'ENOENT') return {};
+    if ((error as { code?: string })?.code === 'ENOENT') return {};
     throw error;
   }
 }

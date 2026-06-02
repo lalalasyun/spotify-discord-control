@@ -1,6 +1,4 @@
 #!/usr/bin/env bun
-// @ts-nocheck
-
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -114,8 +112,8 @@ async function main() {
 }
 
 function parseArgs(argv) {
-  const flags = {};
-  const positional = [];
+  const flags: Record<string, string | boolean> = {};
+  const positional: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -326,9 +324,9 @@ async function handleServe(flags) {
     }
   });
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
+    server.listen(port, '127.0.0.1', () => resolve());
   });
 
   const shutdown = () => {
@@ -462,7 +460,7 @@ function createPlaybackHub({ pollIntervalMs }) {
   let version = 0;
   let currentState = null;
   let refreshPromise = null;
-  const clients = new Set();
+  const clients = new Set<any>();
   let keepaliveTimer = null;
   let pollingTimer = null;
 
@@ -865,7 +863,7 @@ async function refreshAccessToken({ clientId, clientSecret, refreshToken }) {
 }
 
 function tokenRequestHeaders({ clientId, clientSecret }) {
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
   };
   if (clientSecret) {
@@ -1077,7 +1075,7 @@ function safeJsonParse(text) {
 }
 
 function openUrl(url) {
-  const commands =
+  const commands: [string, string[]][] =
     process.platform === 'darwin'
       ? [['open', [url]]]
       : process.platform === 'win32'
