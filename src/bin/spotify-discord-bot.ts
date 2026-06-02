@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
+// @ts-nocheck
 
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -8,17 +9,23 @@ import { fileURLToPath } from 'node:url';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const token = process.env.DISCORD_BOT_TOKEN || '';
-const channelId = process.env.DISCORD_CHANNEL_ID ||
+const channelId =
+  process.env.DISCORD_CHANNEL_ID ||
   process.env.SPOTIFY_DISCORD_CHANNEL_ID ||
   process.env.SPOTIFY_PLAYBACK_DISCORD_CHANNEL_ID ||
   '';
-const apiUrl = (process.env.SPOTIFY_PLAYBACK_API_URL || 'http://127.0.0.1:8788').replace(/\/+$/, '');
+const apiUrl = (process.env.SPOTIFY_PLAYBACK_API_URL || 'http://127.0.0.1:8788').replace(
+  /\/+$/,
+  '',
+);
 const stateDir = process.env.SPOTIFY_DISCORD_STATE_DIR
   ? path.resolve(process.env.SPOTIFY_DISCORD_STATE_DIR)
   : process.env.SPOTIFY_PLAYBACK_STATE_DIR
     ? path.resolve(process.env.SPOTIFY_PLAYBACK_STATE_DIR)
     : path.join(os.homedir(), '.local', 'state', 'spotify-oauth-cli-discord');
-const cliPath = process.env.SPOTIFY_OAUTH_COMMAND || fileURLToPath(new URL('./spotify-oauth.js', import.meta.url));
+const cliPath =
+  process.env.SPOTIFY_OAUTH_COMMAND ||
+  fileURLToPath(new URL('./spotify-oauth.ts', import.meta.url));
 const messageIdFile = path.join(stateDir, 'last-message-id');
 const trackIdFile = path.join(stateDir, 'last-track-id');
 const signatureFile = path.join(stateDir, 'last-signature');
@@ -35,23 +42,6 @@ let stopping = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function stateFile(name) {
-  return path.join(stateDir, name);
-}
-
-async function readState(name) {
-  try {
-    return (await readFile(stateFile(name), 'utf8')).trim();
-  } catch {
-    return '';
-  }
-}
-
-async function writeState(name, value) {
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(stateFile(name), `${value}\n`, { mode: 0o600 });
 }
 
 async function readLastMessageId() {
@@ -113,7 +103,9 @@ function artists(track) {
 }
 
 function albumArtworkUrl(track) {
-  const images = Array.isArray(track?.album?.images) ? track.album.images.filter((image) => image?.url) : [];
+  const images = Array.isArray(track?.album?.images)
+    ? track.album.images.filter((image) => image?.url)
+    : [];
   return images.sort((a, b) => (b?.width || 0) - (a?.width || 0))[0]?.url || '';
 }
 
@@ -138,29 +130,29 @@ function buildControls(state) {
           type: 2,
           custom_id: `${componentPrefix}prev`,
           style: 2,
-          emoji: { name: '⏮️' }
+          emoji: { name: '⏮️' },
         },
         {
           type: 2,
           custom_id: `${componentPrefix}${toggleAction}`,
           style: state?.isPlaying ? 2 : 3,
-          emoji: { name: toggleEmoji }
+          emoji: { name: toggleEmoji },
         },
         {
           type: 2,
           custom_id: `${componentPrefix}next`,
           style: 2,
-          emoji: { name: '⏭️' }
+          emoji: { name: '⏭️' },
         },
         {
           type: 2,
           custom_id: `${componentPrefix}like`,
           style: 2,
           emoji: { name: '➕' },
-          disabled: likeDisabled
-        }
-      ]
-    }
+          disabled: likeDisabled,
+        },
+      ],
+    },
   ];
 }
 
@@ -182,19 +174,19 @@ function formatMessage(eventType, state) {
       { name: 'Status', value: status, inline: true },
       { name: 'Position', value: position, inline: true },
       { name: 'Device', value: device, inline: true },
-      { name: 'Album', value: album, inline: false }
+      { name: 'Album', value: album, inline: false },
     ],
     footer: {
-      text: `${eventType}${state?.inactiveReason ? ` | ${state.inactiveReason}` : ''} | version ${state?.version ?? 'unknown'}`
+      text: `${eventType}${state?.inactiveReason ? ` | ${state.inactiveReason}` : ''} | version ${state?.version ?? 'unknown'}`,
     },
-    timestamp: state?.updatedAt || undefined
+    timestamp: state?.updatedAt || undefined,
   };
   if (artworkUrl) embed.image = { url: artworkUrl };
 
   return {
     content: '',
     embeds: [embed],
-    components: buildControls(state)
+    components: buildControls(state),
   };
 }
 
@@ -202,7 +194,7 @@ function cleanMessage(message) {
   return {
     content: message?.content || '',
     embeds: Array.isArray(message?.embeds) ? message.embeds : [],
-    components: Array.isArray(message?.components) ? message.components : []
+    components: Array.isArray(message?.components) ? message.components : [],
   };
 }
 
@@ -217,8 +209,8 @@ function disablePlaybackButtons(message) {
             const action = actionFromCustomId(component?.custom_id || '');
             return playbackActions.has(action) ? { ...component, disabled: true } : component;
           })
-        : row?.components
-    }))
+        : row?.components,
+    })),
   };
 }
 
@@ -235,11 +227,11 @@ function updateLikeButton(message, saved) {
             return {
               ...component,
               style: saved ? 3 : 2,
-              emoji: { name: saved ? '✔️' : '➕' }
+              emoji: { name: saved ? '✔️' : '➕' },
             };
           })
-        : row?.components
-    }))
+        : row?.components,
+    })),
   };
 }
 
@@ -271,9 +263,9 @@ async function discordRequest(method, endpoint, payload = null, softStatuses = [
     method,
     headers: {
       Authorization: `Bot ${token}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    body: payload ? JSON.stringify({ ...payload, allowed_mentions: { parse: [] } }) : undefined
+    body: payload ? JSON.stringify({ ...payload, allowed_mentions: { parse: [] } }) : undefined,
   });
 
   if (response.status === 429) {
@@ -288,7 +280,9 @@ async function discordRequest(method, endpoint, payload = null, softStatuses = [
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Discord ${method} ${endpoint} failed: ${response.status} ${body.slice(0, 300)}`);
+    throw new Error(
+      `Discord ${method} ${endpoint} failed: ${response.status} ${body.slice(0, 300)}`,
+    );
   }
 
   const text = await response.text();
@@ -301,7 +295,12 @@ async function postMessage(message) {
 }
 
 async function editMessage(messageId, message) {
-  const result = await discordRequest('PATCH', `/channels/${channelId}/messages/${messageId}`, message, [403, 404]);
+  const result = await discordRequest(
+    'PATCH',
+    `/channels/${channelId}/messages/${messageId}`,
+    message,
+    [403, 404],
+  );
   return !result?.unavailable;
 }
 
@@ -313,7 +312,7 @@ async function upsertPlaybackMessage(message, trackId) {
   const lastMessageId = await readLastMessageId();
   const lastTrackId = await readLastTrackId();
 
-  if (lastMessageId && lastTrackId === trackId && await editMessage(lastMessageId, message)) {
+  if (lastMessageId && lastTrackId === trackId && (await editMessage(lastMessageId, message))) {
     return { action: 'edited', messageId: lastMessageId };
   }
 
@@ -334,12 +333,14 @@ async function handlePlaybackEvent(eventType, payload) {
   if (!state || typeof state !== 'object') return;
 
   const signature = stateSignature(eventType, state);
-  if (signature === await readLastSignature()) return;
+  if (signature === (await readLastSignature())) return;
 
   const trackId = displayTrack(state)?.id || 'none';
   const result = await upsertPlaybackMessage(formatMessage(eventType, state), trackId);
   await writeLastSignature(signature);
-  console.log(`${result.action} ${eventType} version=${state.version ?? 'unknown'} message=${result.messageId}`);
+  console.log(
+    `${result.action} ${eventType} version=${state.version ?? 'unknown'} message=${result.messageId}`,
+  );
 }
 
 async function fetchFreshState() {
@@ -354,7 +355,9 @@ async function waitForFreshState(signal) {
     try {
       return await fetchFreshState();
     } catch (error) {
-      console.error(`playback API unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `playback API unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
       await sleep(5_000);
     }
   }
@@ -369,7 +372,7 @@ function runSpotify(action, trackId = '') {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, command, '--json'], {
       env,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
@@ -394,7 +397,7 @@ async function acknowledgeInteraction(interaction) {
   await fetch(`${DISCORD_API}/interactions/${interaction.id}/${interaction.token}/callback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 6 })
+    body: JSON.stringify({ type: 6 }),
   });
 }
 
@@ -412,7 +415,10 @@ async function handleInteraction(interaction) {
     return;
   }
 
-  const result = await runSpotify(action, action === 'like' ? trackIdFromMessage(interaction.message) : '');
+  const result = await runSpotify(
+    action,
+    action === 'like' ? trackIdFromMessage(interaction.message) : '',
+  );
   if (!result.ok) {
     console.error(`control ${action} failed: ${result.stderr || result.stdout || 'unknown error'}`);
   }
@@ -433,7 +439,9 @@ async function handleInteraction(interaction) {
     const state = await fetchFreshState();
     await editMessage(targetMessageId, formatMessage('control', state));
   } catch (error) {
-    console.error(`control ${action} refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `control ${action} refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -452,7 +460,7 @@ async function getGatewayUrl() {
 
 async function runGateway(signal) {
   if (typeof WebSocket !== 'function') {
-    throw new Error('Node.js WebSocket global is unavailable. Use Node 22 or newer.');
+    throw new Error('WebSocket global is unavailable. Use Bun 1.3 or newer.');
   }
 
   const socket = new WebSocket(await getGatewayUrl());
@@ -482,15 +490,18 @@ async function runGateway(signal) {
       if (packet.s !== null && packet.s !== undefined) sequence = packet.s;
 
       if (packet.op === 10) {
-        heartbeatTimer = setInterval(() => send(1, sequence), packet.d?.heartbeat_interval || 45_000);
+        heartbeatTimer = setInterval(
+          () => send(1, sequence),
+          packet.d?.heartbeat_interval || 45_000,
+        );
         send(2, {
           token,
           intents: 1,
           properties: {
             os: process.platform,
             browser: 'spotify-discord-bot',
-            device: 'spotify-discord-bot'
-          }
+            device: 'spotify-discord-bot',
+          },
         });
         return;
       }
@@ -539,8 +550,8 @@ async function consumeEvents(signal) {
 
   for await (const chunk of response.body) {
     buffer += decoder.decode(chunk, { stream: true });
-    let splitIndex;
-    while ((splitIndex = buffer.indexOf('\n')) >= 0) {
+    let splitIndex = buffer.indexOf('\n');
+    while (splitIndex >= 0) {
       const line = buffer.slice(0, splitIndex).replace(/\r$/, '');
       buffer = buffer.slice(splitIndex + 1);
 
@@ -554,6 +565,7 @@ async function consumeEvents(signal) {
       }
       if (line.startsWith('event:')) currentEvent = line.slice(6).trim();
       if (line.startsWith('data:')) currentData += line.slice(5).trim();
+      splitIndex = buffer.indexOf('\n');
     }
   }
 }

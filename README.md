@@ -1,6 +1,6 @@
 # spotify-discord-control
 
-Spotify 公式 Web API と OAuth PKCE で、現在の再生状態取得、再生操作、Discord への再生カード投稿を行う小さな Node.js CLI。
+Spotify 公式 Web API と OAuth PKCE で、現在の再生状態取得、再生操作、Discord への再生カード投稿を行う小さな TypeScript/Bun CLI。
 
 ## Features
 
@@ -15,7 +15,7 @@ Spotify 公式 Web API と OAuth PKCE で、現在の再生状態取得、再生
 
 ## Requirements
 
-- Node.js 22+
+- Bun 1.3+
 - Spotify account
 - Spotify Developer App
 - Discord bot and target channel, if you use Discord integration
@@ -67,7 +67,8 @@ DISCORD_CHANNEL_ID=your_discord_channel_id
 Then run:
 
 ```bash
-npm run bootstrap -- --login
+bun install
+bun run bootstrap -- --login
 ```
 
 ## Doppler Setup
@@ -80,7 +81,7 @@ doppler secrets set SPOTIFY_CLIENT_ID=...
 doppler secrets set SPOTIFY_REDIRECT_URI=http://127.0.0.1:8787/callback
 doppler secrets set DISCORD_BOT_TOKEN=...
 doppler secrets set DISCORD_CHANNEL_ID=...
-doppler run -- npm run bootstrap -- --login
+doppler run -- bun run bootstrap -- --login
 ```
 
 OAuth access and refresh tokens are stored locally by the CLI, not in Doppler.
@@ -105,7 +106,7 @@ spotify-oauth toggle-like
 Start the playback API:
 
 ```bash
-npm run serve
+bun run serve
 ```
 
 Endpoints:
@@ -119,13 +120,13 @@ Endpoints:
 Start the local API first:
 
 ```bash
-npm run serve
+bun run serve
 ```
 
 In another shell:
 
 ```bash
-npm run discord
+bun run discord
 ```
 
 The bot posts a playback card to `DISCORD_CHANNEL_ID` and listens for button interactions:
@@ -182,11 +183,11 @@ DISCORD_CHANNEL_ID=your_discord_channel_id
 Run the one-command deploy:
 
 ```bash
-npm install
-npm run deploy:worker
+bun install
+bun run deploy:worker
 ```
 
-The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, deploys the Worker with `wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
+The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, deploys the Worker with `bunx wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
 
 After deploy:
 
@@ -204,10 +205,22 @@ Hosting is intentionally left to the user. Common options:
 - systemd user services
 - Docker or compose wrapper
 - tmux/screen
-- Cloudflare Workers, using `npm run deploy:worker`
+- Cloudflare Workers, using `bun run deploy:worker`
 - any process manager that can run two commands:
-  - `npm run serve`
-  - `npm run discord`
+  - `bun run serve`
+  - `bun run discord`
+
+## Development
+
+```bash
+bun run check
+bun run typecheck
+bun run lint
+bun test
+bun run format
+```
+
+See `docs/commands.md` and `docs/architecture.md` for the command surface and project structure.
 
 Keep `.env`, Spotify OAuth token files, and Discord bot tokens out of git.
 

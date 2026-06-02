@@ -5,26 +5,33 @@
   "description": "Small Spotify OAuth PKCE CLI with optional Discord playback controls.",
   "license": "MIT",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "bin": {
-    "spotify-oauth": "./src/bin/spotify-oauth.js",
-    "spotify-discord-bot": "./src/bin/spotify-discord-bot.js"
+    "spotify-oauth": "./src/bin/spotify-oauth.ts",
+    "spotify-discord-bot": "./src/bin/spotify-discord-bot.ts"
   },
   "scripts": {
     "bootstrap": "scripts/bootstrap-oss.sh",
-    "serve": "node src/bin/spotify-oauth.js serve",
-    "discord": "node src/bin/spotify-discord-bot.js",
+    "serve": "bun run src/bin/spotify-oauth.ts serve",
+    "discord": "bun run src/bin/spotify-discord-bot.ts",
     "deploy:worker": "scripts/deploy-worker.sh",
-    "register:discord": "node scripts/register-discord-commands.js",
-    "test": "node tests/worker-smoke.mjs",
-    "check": "node --check src/bin/spotify-oauth.js && node --check src/bin/spotify-discord-bot.js && node --check worker/src/index.js && node --check scripts/register-discord-commands.js"
+    "register:discord": "bun run scripts/register-discord-commands.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "bun run typecheck && bun run lint && bun test"
   },
   "engines": {
-    "node": ">=22"
+    "bun": ">=1.3.0"
   },
   "dependencies": {
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
+    "@types/bun": "^1.3.14",
+    "typescript": "^5.9.3",
     "wrangler": "^4.96.0"
   }
 }

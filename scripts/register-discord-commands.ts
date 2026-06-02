@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
+// @ts-nocheck
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -21,14 +22,16 @@ async function main() {
     method: 'PUT',
     headers: {
       Authorization: `Bot ${botToken}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(commands())
+    body: JSON.stringify(commands()),
   });
 
   const body = await response.text();
   if (!response.ok) {
-    throw new Error(`Discord command registration failed: ${response.status} ${body.slice(0, 500)}`);
+    throw new Error(
+      `Discord command registration failed: ${response.status} ${body.slice(0, 500)}`,
+    );
   }
 
   const target = guildId ? `guild ${guildId}` : 'global';
@@ -36,20 +39,22 @@ async function main() {
 }
 
 function commands() {
-  return [{
-    name: 'spotify',
-    description: 'Control Spotify playback and show the current track.',
-    options: [
-      subcommand('card', 'Post or refresh the configured playback card.'),
-      subcommand('now', 'Show the current playback state here.'),
-      subcommand('login', 'Get a Spotify authorization URL.'),
-      subcommand('play', 'Resume playback.'),
-      subcommand('pause', 'Pause playback.'),
-      subcommand('next', 'Skip to the next track.'),
-      subcommand('prev', 'Go back to the previous track.'),
-      subcommand('like', 'Toggle saved status for the current track.')
-    ]
-  }];
+  return [
+    {
+      name: 'spotify',
+      description: 'Control Spotify playback and show the current track.',
+      options: [
+        subcommand('card', 'Post or refresh the configured playback card.'),
+        subcommand('now', 'Show the current playback state here.'),
+        subcommand('login', 'Get a Spotify authorization URL.'),
+        subcommand('play', 'Resume playback.'),
+        subcommand('pause', 'Pause playback.'),
+        subcommand('next', 'Skip to the next track.'),
+        subcommand('prev', 'Go back to the previous track.'),
+        subcommand('like', 'Toggle saved status for the current track.'),
+      ],
+    },
+  ];
 }
 
 function subcommand(name, description) {
@@ -83,7 +88,10 @@ async function readEnvFile(filePath) {
       const equalsIndex = line.indexOf('=');
       if (equalsIndex < 1) continue;
       const key = line.slice(0, equalsIndex).trim();
-      const value = line.slice(equalsIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+      const value = line
+        .slice(equalsIndex + 1)
+        .trim()
+        .replace(/^['"]|['"]$/g, '');
       env[key] = value;
     }
     return env;

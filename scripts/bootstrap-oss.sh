@@ -9,7 +9,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/bootstrap-oss.sh [--login]
 
-Loads .env (or the current Doppler/exported environment), installs npm metadata,
+Loads .env (or the current Doppler/exported environment), installs Bun metadata,
 and writes Spotify OAuth config.
 
 Required variables:
@@ -64,7 +64,7 @@ if [[ -z "${SPOTIFY_REDIRECT_URI:-}" ]]; then
 fi
 
 cd "$ROOT"
-npm install
+bun install
 
 setup_args=(
   setup
@@ -76,12 +76,12 @@ if [[ -n "${SPOTIFY_CLIENT_SECRET:-}" ]]; then
   setup_args+=(--client-secret "$SPOTIFY_CLIENT_SECRET")
 fi
 
-node src/bin/spotify-oauth.js "${setup_args[@]}"
+bun run src/bin/spotify-oauth.ts "${setup_args[@]}"
 
 if [[ "$LOGIN" == "1" ]]; then
-  node src/bin/spotify-oauth.js login
+  bun run src/bin/spotify-oauth.ts login
 fi
 
 echo "Bootstrap complete."
-echo "Start API:     npm run serve"
-echo "Start Discord: npm run discord"
+echo "Start API:     bun run serve"
+echo "Start Discord: bun run discord"

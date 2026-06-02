@@ -55,7 +55,7 @@ cat > "$config_file" <<JSON
 {
   "\$schema": "node_modules/wrangler/config-schema.json",
   "name": "$worker_name",
-  "main": "worker/src/index.js",
+  "main": "worker/src/index.ts",
   "compatibility_date": "2026-06-01",
   "kv_namespaces": [
     {
@@ -70,10 +70,10 @@ cat > "$config_file" <<JSON
 JSON
 
 echo "Deploying $worker_name with $config_file..."
-npx wrangler deploy --config "$config_file" --secrets-file "$env_file"
+bunx wrangler deploy --config "$config_file" --secrets-file "$env_file"
 
 echo "Registering Discord commands..."
-node scripts/register-discord-commands.js --env "$env_file"
+bun run scripts/register-discord-commands.ts --env "$env_file"
 
 cat <<EOF
 

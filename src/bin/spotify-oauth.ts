@@ -1,9 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
+// @ts-nocheck
 
-import { randomBytes, createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -22,7 +23,7 @@ const SCOPES = [
   'user-read-currently-playing',
   'user-modify-playback-state',
   'user-library-read',
-  'user-library-modify'
+  'user-library-modify',
 ];
 
 const usage = `spotify-oauth <command> [options]
@@ -163,7 +164,7 @@ async function handleSetup(flags) {
     ...existingConfig,
     clientId,
     redirectUri,
-    ...(clientSecret ? { clientSecret } : {})
+    ...(clientSecret ? { clientSecret } : {}),
   };
 
   await saveConfig(nextConfig);
@@ -184,13 +185,13 @@ async function handleLogin(flags) {
     code_challenge_method: 'S256',
     code_challenge: challenge,
     state,
-    scope: SCOPES.join(' ')
+    scope: SCOPES.join(' '),
   }).toString();
 
   const callbackPromise = waitForAuthorizationCode({
     redirectUri: config.redirectUri,
     callbackPort,
-    expectedState: state
+    expectedState: state,
   });
 
   const shouldOpenBrowser = flags.open !== false;
@@ -211,7 +212,7 @@ async function handleLogin(flags) {
     clientSecret: config.clientSecret,
     redirectUri: config.redirectUri,
     codeVerifier: verifier,
-    authorizationCode
+    authorizationCode,
   });
 
   await saveTokens(tokens);
@@ -227,7 +228,7 @@ async function handleStatus(flags) {
     hasRefreshToken: Boolean(tokens?.refreshToken),
     accessTokenExpiresAt: tokens?.accessTokenExpiresAt ?? null,
     configPath: CONFIG_PATH,
-    tokenPath: TOKEN_PATH
+    tokenPath: TOKEN_PATH,
   };
 
   if (flags.json) {
@@ -284,7 +285,7 @@ async function handleServe(flags) {
   const pollIntervalMs = parseNumberFlag(
     flags['poll-interval-ms'],
     DEFAULT_POLL_INTERVAL_MS,
-    'poll-interval-ms'
+    'poll-interval-ms',
   );
 
   const hub = createPlaybackHub({ pollIntervalMs });
@@ -314,13 +315,13 @@ async function handleServe(flags) {
       writeJson(response, 404, {
         ok: false,
         error: 'not_found',
-        message: '利用可能なエンドポイント: GET /health, GET /playback/state, GET /events'
+        message: '利用可能なエンドポイント: GET /health, GET /playback/state, GET /events',
       });
     } catch (error) {
       writeJson(response, 500, {
         ok: false,
         error: 'internal_error',
-        message: error.message
+        message: error.message,
       });
     }
   });
@@ -349,7 +350,7 @@ async function handlePlaybackControl(command, flags) {
     await spotifyApiFetch('/v1/me/player/play', {
       method: 'PUT',
       body: {},
-      query: { device_id: deviceId }
+      query: { device_id: deviceId },
     });
     return printControlResult(flags, { action: 'play', message: 'Spotify を再生しました。' });
   }
@@ -357,7 +358,7 @@ async function handlePlaybackControl(command, flags) {
   if (normalizedCommand === 'pause') {
     await spotifyApiFetch('/v1/me/player/pause', {
       method: 'PUT',
-      query: { device_id: deviceId }
+      query: { device_id: deviceId },
     });
     return printControlResult(flags, { action: 'pause', message: 'Spotify を一時停止しました。' });
   }
@@ -365,7 +366,7 @@ async function handlePlaybackControl(command, flags) {
   const endpoint = normalizedCommand === 'next' ? '/v1/me/player/next' : '/v1/me/player/previous';
   await spotifyApiFetch(endpoint, {
     method: 'POST',
-    query: { device_id: deviceId }
+    query: { device_id: deviceId },
   });
   const message = normalizedCommand === 'next' ? '次の曲へ送りました。' : '前の曲へ戻しました。';
   return printControlResult(flags, { action: normalizedCommand, message });
@@ -374,19 +375,21 @@ async function handlePlaybackControl(command, flags) {
 async function handleTransfer(args, flags) {
   const deviceId = args[0];
   if (!deviceId) {
-    throw new Error('transfer には device_id が必要です。`spotify-oauth devices --json` で確認してください。');
+    throw new Error(
+      'transfer には device_id が必要です。`spotify-oauth devices --json` で確認してください。',
+    );
   }
 
   await spotifyApiFetch('/v1/me/player', {
     method: 'PUT',
     body: {
       device_ids: [deviceId],
-      play: false
-    }
+      play: false,
+    },
   });
   return printControlResult(flags, {
     action: 'transfer',
-    message: `Spotify の再生デバイスを切り替えました: ${deviceId}`
+    message: `Spotify の再生デバイスを切り替えました: ${deviceId}`,
   });
 }
 
@@ -396,7 +399,7 @@ async function handleSaved(flags) {
   const payload = {
     action: 'saved',
     saved,
-    track
+    track,
   };
 
   if (flags.json) {
@@ -419,7 +422,7 @@ async function handleLibrarySave(shouldSave, flags) {
     action: shouldSave ? 'like' : 'unlike',
     saved: shouldSave,
     track,
-    message
+    message,
   });
 }
 
@@ -436,7 +439,7 @@ async function handleToggleLike(flags) {
     action: 'toggle-like',
     saved: nextSaved,
     track,
-    message
+    message,
   });
 }
 
@@ -479,7 +482,7 @@ function createPlaybackHub({ pollIntervalMs }) {
         for (const event of detectPlaybackEvents(previous, nextState, reason)) {
           broadcastEvent(event.type, {
             reason,
-            state: nextState
+            state: nextState,
           });
         }
 
@@ -508,7 +511,7 @@ function createPlaybackHub({ pollIntervalMs }) {
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive'
+        Connection: 'keep-alive',
       });
       response.write('\n');
       clients.add(response);
@@ -524,7 +527,7 @@ function createPlaybackHub({ pollIntervalMs }) {
       if (currentState) {
         writeSseEvent(response, 'snapshot', {
           reason: 'connect',
-          state: currentState
+          state: currentState,
         });
       }
 
@@ -544,7 +547,7 @@ function createPlaybackHub({ pollIntervalMs }) {
       pollingTimer = setInterval(() => {
         hub.refresh('poll').catch((error) => {
           broadcastEvent('error', {
-            message: error.message
+            message: error.message,
           });
         });
       }, pollIntervalMs);
@@ -560,7 +563,7 @@ function createPlaybackHub({ pollIntervalMs }) {
         client.end();
       }
       clients.clear();
-    }
+    },
   };
 
   function broadcastEvent(type, data) {
@@ -672,19 +675,22 @@ async function getAccessToken() {
   const refreshedTokens = await refreshAccessToken({
     clientId: config.clientId,
     clientSecret: config.clientSecret,
-    refreshToken: tokens.refreshToken
+    refreshToken: tokens.refreshToken,
   });
 
   const nextTokens = {
     ...tokens,
     ...refreshedTokens,
-    refreshToken: refreshedTokens.refreshToken ?? tokens.refreshToken
+    refreshToken: refreshedTokens.refreshToken ?? tokens.refreshToken,
   };
   await saveTokens(nextTokens);
   return nextTokens.accessToken;
 }
 
-async function spotifyApiFetch(resourcePath, { method = 'GET', body = null, query = null, retry = true } = {}) {
+async function spotifyApiFetch(
+  resourcePath,
+  { method = 'GET', body = null, query = null, retry = true } = {},
+) {
   const token = await getAccessToken();
   const url = new URL(`https://api.spotify.com${resourcePath}`);
   if (query) {
@@ -699,9 +705,9 @@ async function spotifyApiFetch(resourcePath, { method = 'GET', body = null, quer
     method,
     headers: {
       Authorization: `Bearer ${token}`,
-      ...(body ? { 'Content-Type': 'application/json' } : {})
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: body ? JSON.stringify(body) : undefined
+    body: body ? JSON.stringify(body) : undefined,
   });
 
   if (response.status === 401 && retry) {
@@ -714,12 +720,12 @@ async function spotifyApiFetch(resourcePath, { method = 'GET', body = null, quer
     const refreshedTokens = await refreshAccessToken({
       clientId: config.clientId,
       clientSecret: config.clientSecret,
-      refreshToken: tokens.refreshToken
+      refreshToken: tokens.refreshToken,
     });
     const nextTokens = {
       ...tokens,
       ...refreshedTokens,
-      refreshToken: refreshedTokens.refreshToken ?? tokens.refreshToken
+      refreshToken: refreshedTokens.refreshToken ?? tokens.refreshToken,
     };
     await saveTokens(nextTokens);
     return spotifyApiFetch(resourcePath, { method, body, query, retry: false });
@@ -738,7 +744,7 @@ async function spotifyApiFetch(resourcePath, { method = 'GET', body = null, quer
 
   return {
     status: response.status,
-    body: parsedBody
+    body: parsedBody,
   };
 }
 
@@ -760,7 +766,9 @@ async function resolveControlDeviceId(playback = null) {
     return availableDevice.id;
   }
 
-  throw new Error('Spotify の再生デバイスが見つかりません。Spotify アプリか Web Player を開いてから再実行してください。');
+  throw new Error(
+    'Spotify の再生デバイスが見つかりません。Spotify アプリか Web Player を開いてから再実行してください。',
+  );
 }
 
 async function requireCurrentTrack() {
@@ -770,7 +778,8 @@ async function requireCurrentTrack() {
     return playbackTrack;
   }
 
-  const fallbackTrackId = process.env.SPOTIFY_OAUTH_TRACK_ID || process.env.SPOTIFY_CONTROL_TRACK_ID || '';
+  const fallbackTrackId =
+    process.env.SPOTIFY_OAUTH_TRACK_ID || process.env.SPOTIFY_CONTROL_TRACK_ID || '';
   if (fallbackTrackId) {
     const response = await spotifyApiFetch(`/v1/tracks/${encodeURIComponent(fallbackTrackId)}`);
     const track = normalizeTrack(response.body);
@@ -784,7 +793,7 @@ async function requireCurrentTrack() {
 
 async function isTrackSaved(track) {
   const response = await spotifyApiFetch('/v1/me/library/contains', {
-    query: { uris: libraryUri(track) }
+    query: { uris: libraryUri(track) },
   });
   return Array.isArray(response.body) ? Boolean(response.body[0]) : false;
 }
@@ -792,7 +801,7 @@ async function isTrackSaved(track) {
 async function saveTrackToLibrary(track, shouldSave) {
   await spotifyApiFetch('/v1/me/library', {
     method: shouldSave ? 'PUT' : 'DELETE',
-    query: { uris: libraryUri(track) }
+    query: { uris: libraryUri(track) },
   });
 }
 
@@ -802,7 +811,10 @@ function libraryUri(track) {
 
 function formatTrack(track) {
   const artists = Array.isArray(track.artists)
-    ? track.artists.map((artist) => artist?.name).filter(Boolean).join(', ')
+    ? track.artists
+        .map((artist) => artist?.name)
+        .filter(Boolean)
+        .join(', ')
     : '';
   return `${track.name || 'Unknown track'} / ${artists || 'Unknown artist'}`;
 }
@@ -821,7 +833,7 @@ async function exchangeAuthorizationCode({
   clientSecret,
   redirectUri,
   codeVerifier,
-  authorizationCode
+  authorizationCode,
 }) {
   const response = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -831,8 +843,8 @@ async function exchangeAuthorizationCode({
       grant_type: 'authorization_code',
       code: authorizationCode,
       redirect_uri: redirectUri,
-      code_verifier: codeVerifier
-    })
+      code_verifier: codeVerifier,
+    }),
   });
 
   return handleTokenResponse(response);
@@ -845,8 +857,8 @@ async function refreshAccessToken({ clientId, clientSecret, refreshToken }) {
     body: new URLSearchParams({
       ...(clientSecret ? {} : { client_id: clientId }),
       grant_type: 'refresh_token',
-      refresh_token: refreshToken
-    })
+      refresh_token: refreshToken,
+    }),
   });
 
   return handleTokenResponse(response);
@@ -854,7 +866,7 @@ async function refreshAccessToken({ clientId, clientSecret, refreshToken }) {
 
 function tokenRequestHeaders({ clientId, clientSecret }) {
   const headers = {
-    'Content-Type': 'application/x-www-form-urlencoded'
+    'Content-Type': 'application/x-www-form-urlencoded',
   };
   if (clientSecret) {
     const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
@@ -867,7 +879,8 @@ async function handleTokenResponse(response) {
   const text = await response.text();
   const body = text ? safeJsonParse(text) : {};
   if (!response.ok) {
-    const message = body?.error_description ?? body?.error ?? `token endpoint error (${response.status})`;
+    const message =
+      body?.error_description ?? body?.error ?? `token endpoint error (${response.status})`;
     throw new Error(message);
   }
 
@@ -876,7 +889,7 @@ async function handleTokenResponse(response) {
     refreshToken: body.refresh_token ?? null,
     scope: body.scope,
     tokenType: body.token_type,
-    accessTokenExpiresAt: new Date(Date.now() + (body.expires_in * 1000)).toISOString()
+    accessTokenExpiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(),
   };
 }
 
@@ -950,7 +963,7 @@ function normalizePlaybackState(rawPlayer, { version }) {
       track: null,
       lastTrack: null,
       inactiveReason: 'no_active_device',
-      device: null
+      device: null,
     };
   }
 
@@ -964,7 +977,7 @@ function normalizePlaybackState(rawPlayer, { version }) {
     track,
     lastTrack: null,
     inactiveReason: track ? null : 'no_track',
-    device: normalizeDevice(rawPlayer.device)
+    device: normalizeDevice(rawPlayer.device),
   };
 }
 
@@ -972,13 +985,13 @@ function attachLastKnownTrack(current, previous) {
   if (current.track) {
     return {
       ...current,
-      lastTrack: null
+      lastTrack: null,
     };
   }
 
   return {
     ...current,
-    lastTrack: previous?.track ?? previous?.lastTrack ?? null
+    lastTrack: previous?.track ?? previous?.lastTrack ?? null,
   };
 }
 
@@ -996,15 +1009,15 @@ function normalizeTrack(track) {
       ? {
           id: track.album.id ?? null,
           name: track.album.name ?? null,
-          images: normalizeImages(track.album.images)
+          images: normalizeImages(track.album.images),
         }
       : null,
     artists: Array.isArray(track.artists)
       ? track.artists.map((artist) => ({
           id: artist.id ?? null,
-          name: artist.name ?? null
+          name: artist.name ?? null,
         }))
-      : []
+      : [],
   };
 }
 
@@ -1017,7 +1030,7 @@ function normalizeImages(images) {
     .map((image) => ({
       url: image?.url ?? null,
       width: image?.width ?? null,
-      height: image?.height ?? null
+      height: image?.height ?? null,
     }))
     .filter((image) => image.url);
 }
@@ -1033,13 +1046,13 @@ function normalizeDevice(device) {
     isRestricted: Boolean(device.is_restricted),
     name: device.name ?? null,
     type: device.type ?? null,
-    volumePercent: device.volume_percent ?? null
+    volumePercent: device.volume_percent ?? null,
   };
 }
 
 function writeJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8'
+    'Content-Type': 'application/json; charset=utf-8',
   });
   response.end(`${JSON.stringify(payload, null, 2)}\n`);
 }
@@ -1064,23 +1077,22 @@ function safeJsonParse(text) {
 }
 
 function openUrl(url) {
-  const commands = process.platform === 'darwin'
-    ? [['open', [url]]]
-    : process.platform === 'win32'
-      ? [['cmd', ['/c', 'start', '', url]]]
-      : [['xdg-open', [url]]];
+  const commands =
+    process.platform === 'darwin'
+      ? [['open', [url]]]
+      : process.platform === 'win32'
+        ? [['cmd', ['/c', 'start', '', url]]]
+        : [['xdg-open', [url]]];
 
   for (const [command, args] of commands) {
     try {
       const child = spawn(command, args, {
         detached: true,
-        stdio: 'ignore'
+        stdio: 'ignore',
       });
       child.unref();
       return true;
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return false;
@@ -1128,7 +1140,7 @@ function resolveCallbackPort(redirectUri, rawCallbackPort) {
 }
 
 function assertRedirectUri(redirectUri) {
-  let url;
+  let url = null;
   try {
     url = new URL(redirectUri);
   } catch {
