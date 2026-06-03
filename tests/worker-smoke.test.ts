@@ -405,6 +405,10 @@ test('playback controls post a new card immediately when the track changes', asy
     assert.equal(response.status, 200);
     const payload = await response.json();
     assert.equal(payload.type, 7);
+    assert.equal(payload.data.embeds[0].url, 'https://open.spotify.com/track/old-track-id');
+    assert.equal(payload.data.components[0].components[0].disabled, true);
+    assert.equal(payload.data.components[0].components[1].disabled, true);
+    assert.equal(payload.data.components[0].components[2].disabled, true);
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'new-message-id');
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
     assert.deepEqual(seenRequests, [
@@ -417,6 +421,70 @@ test('playback controls post a new card immediately when the track changes', asy
       'GET /api/v10/channels/channel-id/messages/message-id',
       'PATCH /api/v10/channels/channel-id/messages/message-id',
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('next and prev controls never render a fetched track into the clicked card', async () => {
+  const env = testEnv();
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'new-track-id',
+          type: 'track',
+          name: 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/player/next') {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await worker.fetch(
+      signedInteractionRequest({
+        type: 3,
+        data: { custom_id: 'spotify_worker:v1:next' },
+        message: {
+          id: 'message-id',
+          content: '',
+          embeds: [{ title: 'Old Track', url: 'https://open.spotify.com/track/old-track-id' }],
+          components: playbackComponents(true),
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.type, 7);
+    assert.equal(payload.data.embeds[0].title, 'Old Track');
+    assert.equal(payload.data.embeds[0].url, 'https://open.spotify.com/track/old-track-id');
+    assert.equal(payload.data.components[0].components[0].disabled, true);
+    assert.equal(payload.data.components[0].components[1].disabled, true);
+    assert.equal(payload.data.components[0].components[2].disabled, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

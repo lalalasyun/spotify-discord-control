@@ -182,11 +182,21 @@ async function handleComponentInteraction(interaction, env, ctx) {
     eventType = 'control failed';
   }
 
-  const nextTrackId = displayTrack(nextState)?.id || 'none';
   const previousTrackId = currentTrackId || 'none';
+  if (eventType === 'control' && (action === 'next' || action === 'prev')) {
+    if (env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
+      ctx.waitUntil(upsertPlaybackMessageAfterControl(env, nextState, previousTrackId, eventType));
+    }
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
+  }
+
+  const nextTrackId = displayTrack(nextState)?.id || 'none';
   if (
     eventType === 'control' &&
-    (action === 'next' || action === 'prev' || nextTrackId !== previousTrackId) &&
+    nextTrackId !== previousTrackId &&
     env.DISCORD_CHANNEL_ID &&
     env.DISCORD_BOT_TOKEN
   ) {
