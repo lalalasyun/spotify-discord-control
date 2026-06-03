@@ -8,6 +8,7 @@ const MESSAGE_ID_KEY = 'discord:last-message-id';
 const TRACK_ID_KEY = 'discord:last-track-id';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 const SCOPES = [
   'user-read-playback-state',
   'user-read-currently-playing',
@@ -182,21 +183,14 @@ async function handleComponentInteraction(interaction, env, ctx) {
   }
 
   const nextTrackId = displayTrack(nextState)?.id || 'none';
+  const previousTrackId = currentTrackId || 'none';
   if (
     eventType === 'control' &&
-    nextTrackId !== (currentTrackId || 'none') &&
+    (action === 'next' || action === 'prev' || nextTrackId !== previousTrackId) &&
     env.DISCORD_CHANNEL_ID &&
     env.DISCORD_BOT_TOKEN
   ) {
-    ctx.waitUntil(
-      (async () => {
-        await upsertPlaybackMessage(
-          env,
-          await formatPlaybackMessage(env, eventType, nextState),
-          nextTrackId,
-        );
-      })(),
-    );
+    ctx.waitUntil(upsertPlaybackMessageAfterControl(env, nextState, previousTrackId, eventType));
     return json({
       type: 7,
       data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
@@ -207,6 +201,35 @@ async function handleComponentInteraction(interaction, env, ctx) {
     type: 7,
     data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
   });
+}
+
+async function upsertPlaybackMessageAfterControl(env, initialState, previousTrackId, eventType) {
+  let state = initialState;
+  let trackId = displayTrack(state)?.id || 'none';
+  const retryDelays = playbackControlRetryDelays(env);
+
+  for (const retryDelay of retryDelays) {
+    if (trackId !== previousTrackId) break;
+    await sleep(retryDelay);
+    state = await fetchPlaybackState(env);
+    trackId = displayTrack(state)?.id || 'none';
+  }
+
+  await upsertPlaybackMessage(env, await formatPlaybackMessage(env, eventType, state), trackId);
+}
+
+function playbackControlRetryDelays(env) {
+  if (!env.PLAYBACK_CONTROL_RETRY_DELAYS_MS) return PLAYBACK_CONTROL_RETRY_DELAYS_MS;
+
+  const parsed = String(env.PLAYBACK_CONTROL_RETRY_DELAYS_MS)
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return parsed.length ? parsed : PLAYBACK_CONTROL_RETRY_DELAYS_MS;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function verifyDiscordRequest(request, env, body) {

@@ -307,6 +307,7 @@ test('playback controls post a new card immediately when the track changes', asy
     ...testEnv(),
     DISCORD_CHANNEL_ID: 'channel-id',
     DISCORD_BOT_TOKEN: 'discord-bot-token',
+    PLAYBACK_CONTROL_RETRY_DELAYS_MS: '0,0',
   };
   await env.SPOTIFY_TOKENS.put(
     'spotify:tokens',
@@ -336,12 +337,12 @@ test('playback controls post a new card immediately when the track changes', asy
       playerFetches += 1;
       return jsonResponse({
         is_playing: true,
-        progress_ms: playerFetches === 1 ? 42_000 : 1_000,
+        progress_ms: playerFetches < 3 ? 42_000 : 1_000,
         device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
         item: {
-          id: playerFetches === 1 ? 'old-track-id' : 'new-track-id',
+          id: playerFetches < 3 ? 'old-track-id' : 'new-track-id',
           type: 'track',
-          name: playerFetches === 1 ? 'Old Track' : 'New Track',
+          name: playerFetches < 3 ? 'Old Track' : 'New Track',
           duration_ms: 180_000,
           artists: [{ name: 'Artist' }],
           album: { name: 'Album', images: [] },
@@ -409,6 +410,7 @@ test('playback controls post a new card immediately when the track changes', asy
     assert.deepEqual(seenRequests, [
       'GET /v1/me/player',
       'POST /v1/me/player/next',
+      'GET /v1/me/player',
       'GET /v1/me/player',
       'GET /v1/me/library/contains',
       'POST /api/v10/channels/channel-id/messages',
