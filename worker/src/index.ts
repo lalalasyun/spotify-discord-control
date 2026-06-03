@@ -6,9 +6,11 @@ const SPOTIFY_API = 'https://api.spotify.com';
 const TOKEN_KEY = 'spotify:tokens';
 const MESSAGE_ID_KEY = 'discord:last-message-id';
 const TRACK_ID_KEY = 'discord:last-track-id';
+const CONTROL_SYNC_PENDING_KEY = 'discord:control-sync-pending';
 const BUILD_ID = 'issue19-no-overwrite-20260603-2';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const CONTROL_SYNC_PENDING_TTL_SECONDS = 20;
 const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 const SCOPES = [
   'user-read-playback-state',
@@ -54,6 +56,12 @@ export default {
     }
 
     try {
+      if (await hasPendingControlSync(env)) {
+        logWorkerEvent('spotify_scheduled_skip', {
+          reason: 'control_sync_pending',
+        });
+        return;
+      }
       const state = await fetchPlaybackState(env);
       await upsertPlaybackMessage(
         env,
@@ -227,6 +235,11 @@ async function handleComponentInteraction(interaction, env, ctx) {
   const previousTrackId = currentTrackId || 'none';
   if (eventType === 'control' && (action === 'next' || action === 'prev')) {
     if (env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
+      await markControlSyncPending(env, {
+        action,
+        previousTrackId,
+        nextTrackId: displayTrack(nextState)?.id || 'none',
+      });
       logWorkerEvent('spotify_component_branch', {
         action,
         messageId,
@@ -256,6 +269,11 @@ async function handleComponentInteraction(interaction, env, ctx) {
     env.DISCORD_CHANNEL_ID &&
     env.DISCORD_BOT_TOKEN
   ) {
+    await markControlSyncPending(env, {
+      action,
+      previousTrackId,
+      nextTrackId,
+    });
     logWorkerEvent('spotify_component_branch', {
       action,
       messageId,
@@ -285,42 +303,46 @@ async function handleComponentInteraction(interaction, env, ctx) {
 }
 
 async function upsertPlaybackMessageAfterControl(env, initialState, previousTrackId, eventType) {
-  let state = initialState;
-  let trackId = displayTrack(state)?.id || 'none';
-  const retryDelays = playbackControlRetryDelays(env);
-  logWorkerEvent('spotify_control_upsert_start', {
-    eventType,
-    previousTrackId,
-    initialTrackId: trackId,
-    retryCount: retryDelays.length,
-  });
+  try {
+    let state = initialState;
+    let trackId = displayTrack(state)?.id || 'none';
+    const retryDelays = playbackControlRetryDelays(env);
+    logWorkerEvent('spotify_control_upsert_start', {
+      eventType,
+      previousTrackId,
+      initialTrackId: trackId,
+      retryCount: retryDelays.length,
+    });
 
-  for (const [attemptIndex, retryDelay] of retryDelays.entries()) {
-    if (trackId !== previousTrackId) break;
-    await sleep(retryDelay);
-    state = await fetchPlaybackState(env);
-    trackId = displayTrack(state)?.id || 'none';
-    logWorkerEvent('spotify_control_upsert_retry', {
+    for (const [attemptIndex, retryDelay] of retryDelays.entries()) {
+      if (trackId !== previousTrackId) break;
+      await sleep(retryDelay);
+      state = await fetchPlaybackState(env);
+      trackId = displayTrack(state)?.id || 'none';
+      logWorkerEvent('spotify_control_upsert_retry', {
+        eventType,
+        previousTrackId,
+        trackId,
+        attempt: attemptIndex + 1,
+        delayMs: retryDelay,
+      });
+    }
+
+    const result = await upsertPlaybackMessage(
+      env,
+      await formatPlaybackMessage(env, eventType, state),
+      trackId,
+    );
+    logWorkerEvent('spotify_control_upsert_result', {
       eventType,
       previousTrackId,
       trackId,
-      attempt: attemptIndex + 1,
-      delayMs: retryDelay,
+      action: result.action,
+      messageId: result.messageId,
     });
+  } finally {
+    await clearControlSyncPending(env);
   }
-
-  const result = await upsertPlaybackMessage(
-    env,
-    await formatPlaybackMessage(env, eventType, state),
-    trackId,
-  );
-  logWorkerEvent('spotify_control_upsert_result', {
-    eventType,
-    previousTrackId,
-    trackId,
-    action: result.action,
-    messageId: result.messageId,
-  });
 }
 
 function playbackControlRetryDelays(env) {
@@ -335,6 +357,27 @@ function playbackControlRetryDelays(env) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function hasPendingControlSync(env) {
+  return Boolean(await env.SPOTIFY_TOKENS.get(CONTROL_SYNC_PENDING_KEY));
+}
+
+async function markControlSyncPending(env, details) {
+  await env.SPOTIFY_TOKENS.put(
+    CONTROL_SYNC_PENDING_KEY,
+    JSON.stringify({
+      ...details,
+      createdAt: new Date().toISOString(),
+    }),
+    { expirationTtl: CONTROL_SYNC_PENDING_TTL_SECONDS },
+  );
+  logWorkerEvent('spotify_control_sync_pending_set', details);
+}
+
+async function clearControlSyncPending(env) {
+  await env.SPOTIFY_TOKENS.delete(CONTROL_SYNC_PENDING_KEY);
+  logWorkerEvent('spotify_control_sync_pending_cleared');
 }
 
 function verifyDiscordRequest(request, env, body) {

@@ -305,6 +305,38 @@ test('stale playback card controls do not send Spotify playback commands', async
   }
 });
 
+test('scheduled refresh skips while a control card sync is pending', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'discord:control-sync-pending',
+    JSON.stringify({ action: 'next', previousTrackId: 'old-track-id' }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  globalThis.fetch = (async (input) => {
+    throw new Error(`unexpected fetch: ${String(input)}`);
+  }) as unknown as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+    assert.deepEqual(
+      capturedLogs
+        .events()
+        .filter((event) => event.event === 'spotify_scheduled_skip')
+        .map((event) => event.reason),
+      ['control_sync_pending'],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
 test('playback controls post a new card immediately when the track changes', async () => {
   const env = {
     ...testEnv(),
@@ -418,7 +450,14 @@ test('playback controls post a new card immediately when the track changes', asy
     assert.equal(payload.data.components[0].components[2].disabled, true);
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'new-message-id');
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:control-sync-pending'), null);
     const events = capturedLogs.events();
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_sync_pending_set')
+        .map((event) => ({ action: event.action, previousTrackId: event.previousTrackId })),
+      [{ action: 'next', previousTrackId: 'old-track-id' }],
+    );
     assert.deepEqual(
       events
         .filter((event) => event.event === 'spotify_component_branch')
