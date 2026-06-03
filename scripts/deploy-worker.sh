@@ -63,9 +63,20 @@ cat > "$config_file" <<JSON
       "id": "$kv_namespace_id"
     }
   ],
-  "triggers": {
-    "crons": ["* * * * *"]
-  }
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PLAYBACK_SYNC",
+        "class_name": "PlaybackSyncDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PlaybackSyncDurableObject"]
+    }
+  ]
 }
 JSON
 

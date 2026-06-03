@@ -1,7 +1,7 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import nacl from 'tweetnacl';
-import worker from '../worker/src/index';
+import worker, { PlaybackSyncDurableObject } from '../worker/src/index';
 
 const keyPair = nacl.sign.keyPair();
 
@@ -31,7 +31,7 @@ const ctx = {
   waitUntil() {},
 };
 
-function testEnv() {
+function testEnv(): any {
   return {
     SPOTIFY_CLIENT_ID: 'spotify-client-id',
     DISCORD_PUBLIC_KEY: bytesToHex(keyPair.publicKey),
@@ -431,6 +431,74 @@ test('/spotify now renders saved like state for saved tracks', async () => {
     const likeButton = payload.data.components[0].components[3];
     assert.equal(likeButton.style, 3);
     assert.deepEqual(likeButton.emoji, { name: '✔️' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Durable Object alarm refreshes playback card and schedules active playback in 30 seconds', async () => {
+  const env = testEnv();
+  env.DISCORD_BOT_TOKEN = 'discord-bot-token';
+  env.DISCORD_CHANNEL_ID = 'discord-channel-id';
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const discordPayloads: any[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'synced-track-id',
+          type: 'track',
+          name: 'Synced Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/discord-channel-id/messages') {
+      discordPayloads.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ id: 'discord-message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  let alarmAt = 0;
+  const durableObject = new PlaybackSyncDurableObject(
+    {
+      storage: {
+        async setAlarm(value: number) {
+          alarmAt = value;
+        },
+      },
+    },
+    env,
+  );
+
+  try {
+    const before = Date.now();
+    await durableObject.alarm();
+    assert.equal(discordPayloads.length, 1);
+    assert.equal(discordPayloads[0].embeds[0].title, 'Synced Track');
+    assert.equal(discordPayloads[0].embeds[0].footer.text, 'sync | worker');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'discord-message-id');
+    assert.ok(alarmAt >= before + 30_000);
+    assert.ok(alarmAt <= Date.now() + 30_500);
   } finally {
     globalThis.fetch = originalFetch;
   }
