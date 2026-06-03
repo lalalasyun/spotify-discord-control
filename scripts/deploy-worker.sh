@@ -63,6 +63,10 @@ cat > "$config_file" <<JSON
       "id": "$kv_namespace_id"
     }
   ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
   "triggers": {
     "crons": ["* * * * *"]
   }

@@ -324,6 +324,7 @@ test('playback controls post a new card immediately when the track changes', asy
   await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
 
   const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
   const waitUntilPromises: Promise<unknown>[] = [];
   const waitUntilCtx = {
     waitUntil(promise: Promise<unknown>) {
@@ -414,6 +415,31 @@ test('playback controls post a new card immediately when the track changes', asy
     assert.equal(payload.data.components[0].components[2].disabled, true);
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'new-message-id');
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
+    const events = capturedLogs.events();
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_component_branch')
+        .map((event) => event.branch),
+      ['queue_new_card_for_next_prev'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_upsert_retry')
+        .map((event) => event.trackId),
+      ['new-track-id'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_card_upsert_result')
+        .map((event) => event.action),
+      ['posted'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_upsert_result')
+        .map((event) => ({ action: event.action, trackId: event.trackId })),
+      [{ action: 'posted', trackId: 'new-track-id' }],
+    );
     assert.deepEqual(seenRequests, [
       'GET /v1/me/player',
       'POST /v1/me/player/next',
@@ -426,6 +452,7 @@ test('playback controls post a new card immediately when the track changes', asy
     ]);
   } finally {
     globalThis.fetch = originalFetch;
+    capturedLogs.restore();
   }
 });
 
@@ -655,6 +682,23 @@ function jsonResponse(body, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function captureConsoleLogs() {
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = ((...values: unknown[]) => {
+    lines.push(values.map(String).join(' '));
+  }) as typeof console.log;
+
+  return {
+    events() {
+      return lines.map((line) => JSON.parse(line));
+    },
+    restore() {
+      console.log = originalLog;
+    },
+  };
 }
 
 function playbackComponents(isPlaying: boolean) {
