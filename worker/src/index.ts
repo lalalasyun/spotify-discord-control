@@ -67,6 +67,7 @@ export default {
         env,
         await formatPlaybackMessage(env, 'cron', state),
         displayTrack(state)?.id || 'none',
+        { source: 'cron' },
       );
     } catch (error) {
       console.error(`scheduled refresh failed: ${errorMessage(error)}`);
@@ -112,7 +113,9 @@ async function handleApplicationCommand(interaction, env, request) {
     const state = await fetchPlaybackState(env);
     const message = await formatPlaybackMessage(env, subcommand, state);
     if (subcommand === 'card' && env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
-      const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none');
+      const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none', {
+        source: 'command',
+      });
       return interactionMessage(`Playback card ${result.action}.`, true);
     }
     return json({ type: 4, data: withAllowedMentions(message) });
@@ -332,6 +335,7 @@ async function upsertPlaybackMessageAfterControl(env, initialState, previousTrac
       env,
       await formatPlaybackMessage(env, eventType, state),
       trackId,
+      { source: 'control' },
     );
     logWorkerEvent('spotify_control_upsert_result', {
       eventType,
@@ -915,24 +919,64 @@ async function refreshStoredCard(env, state = null) {
     env,
     await formatPlaybackMessage(env, 'refresh', state),
     displayTrack(state)?.id || 'none',
+    { source: 'refresh' },
   );
 }
 
-async function upsertPlaybackMessage(env, message, trackId) {
+async function upsertPlaybackMessage(env, message, trackId, options = { source: 'unknown' }) {
+  const source = options.source || 'unknown';
   const lastMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
   const lastTrackId = await env.SPOTIFY_TOKENS.get(TRACK_ID_KEY);
+  const snapshot = { messageId: lastMessageId, trackId: lastTrackId };
   logWorkerEvent('spotify_card_upsert_start', {
+    source,
     trackId,
     lastMessageId,
     lastTrackId,
   });
+
+  if (source === 'cron' && (await hasPendingControlSync(env))) {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'control_sync_pending',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'skipped_pending', messageId: lastMessageId };
+  }
+
+  if (source === 'cron' && (await staleKvSnapshot(env, snapshot)).changed) {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'stale_snapshot_before_discord_write',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'stale_skipped', messageId: lastMessageId };
+  }
 
   if (
     lastMessageId &&
     lastTrackId === trackId &&
     (await editMessage(env, lastMessageId, message))
   ) {
+    if (source === 'cron') {
+      const stale = await staleKvSnapshot(env, snapshot);
+      if (stale.changed) {
+        await disableStaleCronMessage(env, lastMessageId, message, {
+          trackId,
+          lastMessageId,
+          lastTrackId,
+          currentMessageId: stale.currentMessageId,
+          currentTrackId: stale.currentTrackId,
+        });
+        return { action: 'stale_skipped', messageId: stale.currentMessageId || lastMessageId };
+      }
+    }
     logWorkerEvent('spotify_card_upsert_result', {
+      source,
       action: 'edited',
       trackId,
       messageId: lastMessageId,
@@ -961,6 +1005,7 @@ async function upsertPlaybackMessage(env, message, trackId) {
         return false;
       });
       logWorkerEvent('spotify_card_disable_previous_result', {
+        source,
         previousMessageId: lastMessageId,
         disabled,
       });
@@ -972,15 +1017,60 @@ async function upsertPlaybackMessage(env, message, trackId) {
     }
   }
 
+  if (source === 'cron') {
+    const stale = await staleKvSnapshot(env, snapshot);
+    if (stale.changed) {
+      await disableStaleCronMessage(env, createdMessage.id, message, {
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        currentMessageId: stale.currentMessageId,
+        currentTrackId: stale.currentTrackId,
+      });
+      return { action: 'stale_skipped', messageId: stale.currentMessageId || createdMessage.id };
+    }
+  }
+
   await env.SPOTIFY_TOKENS.put(MESSAGE_ID_KEY, createdMessage.id);
   await env.SPOTIFY_TOKENS.put(TRACK_ID_KEY, trackId);
   logWorkerEvent('spotify_card_upsert_result', {
+    source,
     action: 'posted',
     trackId,
     messageId: createdMessage.id,
     previousMessageId: lastMessageId,
   });
   return { action: 'posted', messageId: createdMessage.id };
+}
+
+async function staleKvSnapshot(env, snapshot) {
+  const currentMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
+  const currentTrackId = await env.SPOTIFY_TOKENS.get(TRACK_ID_KEY);
+  return {
+    changed: currentMessageId !== snapshot.messageId || currentTrackId !== snapshot.trackId,
+    currentMessageId,
+    currentTrackId,
+  };
+}
+
+async function disableStaleCronMessage(env, messageId, message, details) {
+  const disabled = await editMessage(env, messageId, disablePlaybackButtons(message)).catch(
+    (error) => {
+      logWorkerEvent('spotify_card_stale_cron_disable_failed', {
+        source: 'cron',
+        messageId,
+        error: errorMessage(error),
+        ...details,
+      });
+      return false;
+    },
+  );
+  logWorkerEvent('spotify_card_upsert_stale_write_skipped', {
+    source: 'cron',
+    messageId,
+    disabled,
+    ...details,
+  });
 }
 
 async function editMessage(env, messageId, message) {

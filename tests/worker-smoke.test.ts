@@ -340,6 +340,119 @@ test('scheduled refresh skips while a control card sync is pending', async () =>
   }
 });
 
+test('scheduled refresh does not roll back newer control card KV state', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+  await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'old-message-id');
+  await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'new-track-id',
+          type: 'track',
+          name: 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/channel-id/messages' && init?.method === 'POST') {
+      await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'control-message-id');
+      await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'new-track-id');
+      return jsonResponse({ id: 'cron-message-id' });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/old-message-id' &&
+      init?.method === 'GET'
+    ) {
+      return jsonResponse({
+        id: 'old-message-id',
+        content: '',
+        embeds: [{ url: 'https://open.spotify.com/track/old-track-id' }],
+        components: playbackComponents(true),
+      });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/old-message-id' &&
+      init?.method === 'PATCH'
+    ) {
+      return jsonResponse({ id: 'old-message-id' });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/cron-message-id' &&
+      init?.method === 'PATCH'
+    ) {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.components[0].components[0].disabled, true);
+      assert.equal(body.components[0].components[1].disabled, true);
+      assert.equal(body.components[0].components[2].disabled, true);
+      return jsonResponse({ id: 'cron-message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'control-message-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
+    assert.deepEqual(
+      capturedLogs
+        .events()
+        .filter((event) => event.event === 'spotify_card_upsert_stale_write_skipped')
+        .map((event) => ({
+          messageId: event.messageId,
+          currentMessageId: event.currentMessageId,
+          currentTrackId: event.currentTrackId,
+        })),
+      [
+        {
+          messageId: 'cron-message-id',
+          currentMessageId: 'control-message-id',
+          currentTrackId: 'new-track-id',
+        },
+      ],
+    );
+    assert.deepEqual(seenRequests, [
+      'GET /v1/me/player',
+      'GET /v1/me/library/contains',
+      'POST /api/v10/channels/channel-id/messages',
+      'GET /api/v10/channels/channel-id/messages/old-message-id',
+      'PATCH /api/v10/channels/channel-id/messages/old-message-id',
+      'PATCH /api/v10/channels/channel-id/messages/cron-message-id',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
 test('playback controls post a new card immediately when the track changes', async () => {
   const env = {
     ...testEnv(),
