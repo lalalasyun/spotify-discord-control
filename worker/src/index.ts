@@ -6,6 +6,7 @@ const SPOTIFY_API = 'https://api.spotify.com';
 const TOKEN_KEY = 'spotify:tokens';
 const MESSAGE_ID_KEY = 'discord:last-message-id';
 const TRACK_ID_KEY = 'discord:last-track-id';
+const BUILD_ID = 'issue19-no-overwrite-20260603-2';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
@@ -26,7 +27,7 @@ export default {
       const url = new URL(request.url);
 
       if (request.method === 'GET' && url.pathname === '/health') {
-        return json({ ok: true });
+        return json({ ok: true, build: BUILD_ID });
       }
 
       if (request.method === 'GET' && url.pathname === '/spotify/login') {

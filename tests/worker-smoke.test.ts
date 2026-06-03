@@ -44,7 +44,10 @@ test('health endpoint returns ok', async () => {
   const env = testEnv();
   const response = await worker.fetch(new Request('https://example.test/health'), env, ctx);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true });
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    build: 'issue19-no-overwrite-20260603-2',
+  });
 });
 
 test('Discord ping validates signature and returns pong', async () => {
