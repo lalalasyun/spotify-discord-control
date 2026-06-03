@@ -155,7 +155,7 @@ It provides:
 - `POST /discord/interactions` for Discord slash commands and buttons
 - `GET /spotify/callback` for Spotify OAuth PKCE callback
 - Workers KV token storage
-- Durable Object alarm refresh of the configured playback card every 30 seconds while playback is active
+- Durable Object alarm refresh of the configured playback card every 30 seconds while playback is active, with a one-minute cron watchdog to bootstrap the alarm after deploys
 - `/spotify card`, `now`, `login`, `play`, `pause`, `next`, `prev`, `like`
 
 Create your Spotify app and Discord app yourself. In Spotify, add this redirect URI:
@@ -195,7 +195,7 @@ bun install
 bun run deploy:worker
 ```
 
-The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, configures a Durable Object alarm playback card refresh, deploys the Worker with `bunx wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
+The deploy script creates a Workers KV namespace when `KV_NAMESPACE_ID` is not set, writes `wrangler.generated.jsonc`, configures a Durable Object alarm playback card refresh plus a one-minute watchdog cron, deploys the Worker with `bunx wrangler deploy --secrets-file .env.worker`, and registers Discord slash commands.
 
 After deploy:
 

@@ -76,7 +76,10 @@ cat > "$config_file" <<JSON
       "tag": "v1",
       "new_sqlite_classes": ["PlaybackSyncDurableObject"]
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["* * * * *"]
+  }
 }
 JSON
 

@@ -504,6 +504,43 @@ test('Durable Object alarm refreshes playback card and schedules active playback
   }
 });
 
+test('Durable Object start preserves an existing alarm unless forced', async () => {
+  const env = testEnv();
+  let alarmAt = Date.now() + 5 * 60_000;
+  const durableObject = new PlaybackSyncDurableObject(
+    {
+      storage: {
+        async getAlarm() {
+          return alarmAt;
+        },
+        async setAlarm(value: number) {
+          alarmAt = value;
+        },
+      },
+    },
+    env,
+  );
+
+  const existingAlarm = alarmAt;
+  const response = await durableObject.fetch(
+    new Request('https://playback-sync.internal/start', { method: 'POST' }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(alarmAt, existingAlarm);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    scheduled: false,
+    alarmAt: existingAlarm,
+  });
+
+  const forcedResponse = await durableObject.fetch(
+    new Request('https://playback-sync.internal/start?force=1', { method: 'POST' }),
+  );
+  assert.equal(forcedResponse.status, 200);
+  assert.ok(alarmAt <= Date.now() + 500);
+  assert.deepEqual(await forcedResponse.json(), { ok: true, scheduled: true });
+});
+
 function signedInteractionRequest(payload) {
   const body = JSON.stringify(payload);
   const timestamp = '1760000000';

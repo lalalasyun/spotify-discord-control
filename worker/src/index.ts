@@ -67,8 +67,13 @@ export class PlaybackSyncDurableObject {
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === 'POST' && url.pathname === '/start') {
+      const force = url.searchParams.get('force') === '1';
+      const existingAlarm = await this.ctx.storage.getAlarm?.();
+      if (!force && existingAlarm) {
+        return json({ ok: true, scheduled: false, alarmAt: existingAlarm });
+      }
       await this.scheduleNext(0);
-      return json({ ok: true });
+      return json({ ok: true, scheduled: true });
     }
 
     return json({ ok: false, error: 'not_found' }, 404);
@@ -147,7 +152,7 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
     const message = await formatPlaybackMessage(env, subcommand, state);
     if (subcommand === 'card' && env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
       const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none');
-      ctx.waitUntil(startPlaybackSync(env));
+      ctx.waitUntil(startPlaybackSync(env, { force: true }));
       return interactionMessage(`Playback card ${result.action}.`, true);
     }
     return json({ type: 4, data: withAllowedMentions(message) });
@@ -156,7 +161,7 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
   if (PLAYBACK_ACTIONS.has(subcommand)) {
     await controlPlayback(env, subcommand);
     const state = await fetchPlaybackState(env);
-    ctx.waitUntil(startPlaybackSync(env));
+    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 4,
       data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state)),
@@ -166,7 +171,7 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
   if (subcommand === 'like') {
     const result = await toggleCurrentTrackSaved(env);
     const state = await fetchPlaybackState(env);
-    ctx.waitUntil(startPlaybackSync(env));
+    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 4,
       data: withAllowedMentions({
@@ -203,7 +208,7 @@ async function handleComponentInteraction(interaction, env, ctx) {
     const result = await toggleCurrentTrackSaved(env);
     const nextMessage = updateLikeButton(interaction.message, result.saved);
     ctx.waitUntil(refreshStoredCard(env));
-    ctx.waitUntil(startPlaybackSync(env));
+    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({ type: 7, data: withAllowedMentions(nextMessage) });
   }
 
@@ -212,7 +217,7 @@ async function handleComponentInteraction(interaction, env, ctx) {
   const currentTrackId = displayTrack(state)?.id || '';
   if (messageTrackId && currentTrackId && messageTrackId !== currentTrackId) {
     ctx.waitUntil(refreshStoredCard(env, state));
-    ctx.waitUntil(startPlaybackSync(env));
+    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 7,
       data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
@@ -230,7 +235,7 @@ async function handleComponentInteraction(interaction, env, ctx) {
     eventType = 'control failed';
   }
 
-  ctx.waitUntil(startPlaybackSync(env));
+  ctx.waitUntil(startPlaybackSync(env, { force: true }));
   return json({
     type: 7,
     data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
@@ -317,7 +322,7 @@ async function handleSpotifyCallback(request, env, ctx = null) {
   });
   await saveTokens(env, tokens);
   await env.SPOTIFY_TOKENS.delete(stateKey);
-  ctx?.waitUntil(startPlaybackSync(env));
+  ctx?.waitUntil(startPlaybackSync(env, { force: true }));
 
   return new Response('Spotify authorization complete. You can return to Discord.', {
     headers: {
@@ -775,11 +780,13 @@ async function refreshStoredCard(env, state = null, eventType = 'refresh') {
   );
 }
 
-async function startPlaybackSync(env) {
+async function startPlaybackSync(env, options: any = {}) {
   if (!env.PLAYBACK_SYNC) return;
   const id = env.PLAYBACK_SYNC.idFromName(PLAYBACK_SYNC_OBJECT_NAME);
   const stub = env.PLAYBACK_SYNC.get(id);
-  await stub.fetch('https://playback-sync.internal/start', { method: 'POST' });
+  const url = new URL('https://playback-sync.internal/start');
+  if (options.force) url.searchParams.set('force', '1');
+  await stub.fetch(url.toString(), { method: 'POST' });
 }
 
 async function upsertPlaybackMessage(env, message, trackId) {
