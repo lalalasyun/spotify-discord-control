@@ -8,6 +8,10 @@ const MESSAGE_ID_KEY = 'discord:last-message-id';
 const TRACK_ID_KEY = 'discord:last-track-id';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const PLAYBACK_SYNC_OBJECT_NAME = 'default';
+const PLAYBACK_SYNC_ACTIVE_INTERVAL_MS = 30_000;
+const PLAYBACK_SYNC_IDLE_INTERVAL_MS = 5 * 60_000;
+const PLAYBACK_SYNC_ERROR_INTERVAL_MS = 60_000;
 const SCOPES = [
   'user-read-playback-state',
   'user-read-currently-playing',
@@ -33,7 +37,7 @@ export default {
       }
 
       if (request.method === 'GET' && url.pathname === redirectPath(env)) {
-        return handleSpotifyCallback(request, env);
+        return handleSpotifyCallback(request, env, ctx);
       }
 
       if (request.method === 'POST' && url.pathname === '/discord/interactions') {
@@ -46,23 +50,63 @@ export default {
     }
   },
 
-  async scheduled(_event, env, _ctx) {
-    if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) {
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(startPlaybackSync(env));
+  },
+};
+
+export class PlaybackSyncDurableObject {
+  ctx: any;
+  env: any;
+
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === 'POST' && url.pathname === '/start') {
+      await this.scheduleNext(0);
+      return json({ ok: true });
+    }
+
+    return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  async alarm() {
+    await this.syncPlayback();
+  }
+
+  async syncPlayback() {
+    if (!this.env.DISCORD_CHANNEL_ID || !this.env.DISCORD_BOT_TOKEN) {
+      await this.scheduleNext(PLAYBACK_SYNC_IDLE_INTERVAL_MS);
       return;
     }
 
+    let nextIntervalMs = PLAYBACK_SYNC_ERROR_INTERVAL_MS;
     try {
-      const state = await fetchPlaybackState(env);
-      await upsertPlaybackMessage(
-        env,
-        await formatPlaybackMessage(env, 'cron', state),
-        displayTrack(state)?.id || 'none',
-      );
+      const state = await fetchPlaybackState(this.env);
+      await refreshStoredCard(this.env, state, 'sync');
+      nextIntervalMs = state?.isPlaying
+        ? PLAYBACK_SYNC_ACTIVE_INTERVAL_MS
+        : PLAYBACK_SYNC_IDLE_INTERVAL_MS;
     } catch (error) {
-      console.error(`scheduled refresh failed: ${errorMessage(error)}`);
+      const message = errorMessage(error);
+      if (message.includes('Spotify is not authorized')) {
+        nextIntervalMs = PLAYBACK_SYNC_IDLE_INTERVAL_MS;
+      } else {
+        console.error(`playback sync failed: ${message}`);
+      }
+    } finally {
+      await this.scheduleNext(nextIntervalMs);
     }
-  },
-};
+  }
+
+  async scheduleNext(delayMs) {
+    await this.ctx.storage.setAlarm(Date.now() + delayMs);
+  }
+}
 
 async function handleDiscordInteraction(request, env, ctx) {
   const body = await request.text();
@@ -77,7 +121,7 @@ async function handleDiscordInteraction(request, env, ctx) {
     }
 
     if (interaction.type === 2) {
-      return await handleApplicationCommand(interaction, env, request);
+      return await handleApplicationCommand(interaction, env, request, ctx);
     }
 
     if (interaction.type === 3) {
@@ -90,7 +134,7 @@ async function handleDiscordInteraction(request, env, ctx) {
   return interactionMessage('Unsupported interaction.', true);
 }
 
-async function handleApplicationCommand(interaction, env, request) {
+async function handleApplicationCommand(interaction, env, request, ctx) {
   const subcommand = applicationCommandSubcommand(interaction);
 
   if (subcommand === 'login') {
@@ -103,6 +147,7 @@ async function handleApplicationCommand(interaction, env, request) {
     const message = await formatPlaybackMessage(env, subcommand, state);
     if (subcommand === 'card' && env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
       const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none');
+      ctx.waitUntil(startPlaybackSync(env));
       return interactionMessage(`Playback card ${result.action}.`, true);
     }
     return json({ type: 4, data: withAllowedMentions(message) });
@@ -111,6 +156,7 @@ async function handleApplicationCommand(interaction, env, request) {
   if (PLAYBACK_ACTIONS.has(subcommand)) {
     await controlPlayback(env, subcommand);
     const state = await fetchPlaybackState(env);
+    ctx.waitUntil(startPlaybackSync(env));
     return json({
       type: 4,
       data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state)),
@@ -120,6 +166,7 @@ async function handleApplicationCommand(interaction, env, request) {
   if (subcommand === 'like') {
     const result = await toggleCurrentTrackSaved(env);
     const state = await fetchPlaybackState(env);
+    ctx.waitUntil(startPlaybackSync(env));
     return json({
       type: 4,
       data: withAllowedMentions({
@@ -156,6 +203,7 @@ async function handleComponentInteraction(interaction, env, ctx) {
     const result = await toggleCurrentTrackSaved(env);
     const nextMessage = updateLikeButton(interaction.message, result.saved);
     ctx.waitUntil(refreshStoredCard(env));
+    ctx.waitUntil(startPlaybackSync(env));
     return json({ type: 7, data: withAllowedMentions(nextMessage) });
   }
 
@@ -164,6 +212,7 @@ async function handleComponentInteraction(interaction, env, ctx) {
   const currentTrackId = displayTrack(state)?.id || '';
   if (messageTrackId && currentTrackId && messageTrackId !== currentTrackId) {
     ctx.waitUntil(refreshStoredCard(env, state));
+    ctx.waitUntil(startPlaybackSync(env));
     return json({
       type: 7,
       data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
@@ -180,6 +229,8 @@ async function handleComponentInteraction(interaction, env, ctx) {
     nextState = await fetchPlaybackState(env).catch(() => state);
     eventType = 'control failed';
   }
+
+  ctx.waitUntil(startPlaybackSync(env));
   return json({
     type: 7,
     data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
@@ -243,7 +294,7 @@ async function createAuthorizeUrl(env, request) {
   return authorizeUrl.toString();
 }
 
-async function handleSpotifyCallback(request, env) {
+async function handleSpotifyCallback(request, env, ctx = null) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -266,9 +317,13 @@ async function handleSpotifyCallback(request, env) {
   });
   await saveTokens(env, tokens);
   await env.SPOTIFY_TOKENS.delete(stateKey);
+  ctx?.waitUntil(startPlaybackSync(env));
 
   return new Response('Spotify authorization complete. You can return to Discord.', {
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Referrer-Policy': 'no-referrer',
+    },
   });
 }
 
@@ -710,14 +765,21 @@ function updateLikeButton(message, saved) {
   };
 }
 
-async function refreshStoredCard(env, state = null) {
+async function refreshStoredCard(env, state = null, eventType = 'refresh') {
   if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) return;
   state ??= await fetchPlaybackState(env);
   await upsertPlaybackMessage(
     env,
-    await formatPlaybackMessage(env, 'refresh', state),
+    await formatPlaybackMessage(env, eventType, state),
     displayTrack(state)?.id || 'none',
   );
+}
+
+async function startPlaybackSync(env) {
+  if (!env.PLAYBACK_SYNC) return;
+  const id = env.PLAYBACK_SYNC.idFromName(PLAYBACK_SYNC_OBJECT_NAME);
+  const stub = env.PLAYBACK_SYNC.get(id);
+  await stub.fetch('https://playback-sync.internal/start', { method: 'POST' });
 }
 
 async function upsertPlaybackMessage(env, message, trackId) {
