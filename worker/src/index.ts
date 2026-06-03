@@ -11,6 +11,7 @@ const BUILD_ID = 'issue19-no-overwrite-20260603-2';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 const CONTROL_SYNC_PENDING_TTL_SECONDS = 60;
+const CRON_TRACK_CHANGE_DEBOUNCE_MS = 5_000;
 const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 const SCOPES = [
   'user-read-playback-state',
@@ -957,6 +958,45 @@ async function upsertPlaybackMessage(env, message, trackId, options = { source: 
     return { action: 'stale_skipped', messageId: lastMessageId };
   }
 
+  if (source === 'cron' && lastTrackId !== trackId) {
+    const debounceMs = cronTrackChangeDebounceMs(env);
+    if (debounceMs > 0) {
+      logWorkerEvent('spotify_card_upsert_debounce', {
+        source,
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        delayMs: debounceMs,
+      });
+      await sleep(debounceMs);
+    }
+
+    if (await hasPendingControlSync(env)) {
+      logWorkerEvent('spotify_card_upsert_skipped', {
+        source,
+        reason: 'control_sync_pending_after_debounce',
+        trackId,
+        lastMessageId,
+        lastTrackId,
+      });
+      return { action: 'skipped_pending', messageId: lastMessageId };
+    }
+
+    const stale = await staleKvSnapshot(env, snapshot);
+    if (stale.changed) {
+      logWorkerEvent('spotify_card_upsert_skipped', {
+        source,
+        reason: 'stale_snapshot_after_debounce',
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        currentMessageId: stale.currentMessageId,
+        currentTrackId: stale.currentTrackId,
+      });
+      return { action: 'stale_skipped', messageId: stale.currentMessageId || lastMessageId };
+    }
+  }
+
   if (
     lastMessageId &&
     lastTrackId === trackId &&
@@ -1051,6 +1091,12 @@ async function staleKvSnapshot(env, snapshot) {
     currentMessageId,
     currentTrackId,
   };
+}
+
+function cronTrackChangeDebounceMs(env) {
+  if (!env.CRON_TRACK_CHANGE_DEBOUNCE_MS) return CRON_TRACK_CHANGE_DEBOUNCE_MS;
+  const parsed = Number(env.CRON_TRACK_CHANGE_DEBOUNCE_MS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CRON_TRACK_CHANGE_DEBOUNCE_MS;
 }
 
 async function disableStaleCronMessage(env, messageId, message, details) {
