@@ -7,9 +7,11 @@ const keyPair = nacl.sign.keyPair();
 
 class MemoryKv {
   values: Map<string, string>;
+  puts: Array<{ key: string; options?: Record<string, unknown> }>;
 
   constructor() {
     this.values = new Map();
+    this.puts = [];
   }
 
   async get(key: string, type = 'text') {
@@ -18,8 +20,9 @@ class MemoryKv {
     return type === 'json' ? JSON.parse(value) : value;
   }
 
-  async put(key: string, value: string) {
+  async put(key: string, value: string, options?: Record<string, unknown>) {
     this.values.set(key, value);
+    this.puts.push({ key, options });
   }
 
   async delete(key: string) {
@@ -451,6 +454,12 @@ test('playback controls post a new card immediately when the track changes', asy
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'new-message-id');
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
     assert.equal(await env.SPOTIFY_TOKENS.get('discord:control-sync-pending'), null);
+    assert.deepEqual(
+      env.SPOTIFY_TOKENS.puts
+        .filter((put) => put.key === 'discord:control-sync-pending')
+        .map((put) => put.options?.expirationTtl),
+      [60],
+    );
     const events = capturedLogs.events();
     assert.deepEqual(
       events

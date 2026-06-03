@@ -10,7 +10,7 @@ const CONTROL_SYNC_PENDING_KEY = 'discord:control-sync-pending';
 const BUILD_ID = 'issue19-no-overwrite-20260603-2';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
-const CONTROL_SYNC_PENDING_TTL_SECONDS = 20;
+const CONTROL_SYNC_PENDING_TTL_SECONDS = 60;
 const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 const SCOPES = [
   'user-read-playback-state',
