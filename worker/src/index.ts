@@ -180,6 +180,29 @@ async function handleComponentInteraction(interaction, env, ctx) {
     nextState = await fetchPlaybackState(env).catch(() => state);
     eventType = 'control failed';
   }
+
+  const nextTrackId = displayTrack(nextState)?.id || 'none';
+  if (
+    eventType === 'control' &&
+    nextTrackId !== (currentTrackId || 'none') &&
+    env.DISCORD_CHANNEL_ID &&
+    env.DISCORD_BOT_TOKEN
+  ) {
+    ctx.waitUntil(
+      (async () => {
+        await upsertPlaybackMessage(
+          env,
+          await formatPlaybackMessage(env, eventType, nextState),
+          nextTrackId,
+        );
+      })(),
+    );
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
+  }
+
   return json({
     type: 7,
     data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
