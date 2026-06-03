@@ -632,7 +632,7 @@ async function spotifyApiFetch(env, endpoint, options: any = {}) {
 
 async function fetchPlaybackState(env) {
   const response = await spotifyApiFetch(env, '/v1/me/player');
-  return normalizePlaybackState(response.body);
+  return hydratePlaybackTrack(env, normalizePlaybackState(response.body));
 }
 
 async function controlPlayback(env, action, playbackState = null) {
@@ -733,16 +733,62 @@ function normalizeTrack(track) {
   if (!track) return null;
   return {
     id: track.id || '',
-    name: track.name || 'Unknown track',
+    name: track.name || '',
     durationMs: track.duration_ms || 0,
     artists: Array.isArray(track.artists)
-      ? track.artists.map((artist) => ({ name: artist.name || 'Unknown artist' }))
+      ? track.artists.map((artist) => ({ name: artist.name || '' }))
       : [],
     album: {
-      name: track.album?.name || 'Unknown album',
+      name: track.album?.name || '',
       images: Array.isArray(track.album?.images) ? track.album.images : [],
     },
   };
+}
+
+async function hydratePlaybackTrack(env, state) {
+  const track = state?.track;
+  if (!track?.id || hasDisplayMetadata(track)) return state;
+
+  try {
+    const response = await spotifyApiFetch(env, `/v1/tracks/${encodeURIComponent(track.id)}`);
+    const hydrated = normalizeTrack(response.body);
+    if (!hydrated?.id) return state;
+    const merged = mergeTrack(track, hydrated);
+    return {
+      ...state,
+      track: merged,
+      lastTrack: merged,
+    };
+  } catch (error) {
+    console.error(`track metadata hydrate failed: ${errorMessage(error)}`);
+    return state;
+  }
+}
+
+function hasDisplayMetadata(track) {
+  const hasName = Boolean(track?.name);
+  const hasArtist = Array.isArray(track?.artists) && track.artists.some((artist) => artist?.name);
+  return hasName && hasArtist;
+}
+
+function mergeTrack(primary, fallback) {
+  return {
+    id: primary.id || fallback.id || '',
+    name: primary.name || fallback.name || '',
+    durationMs: primary.durationMs || fallback.durationMs || 0,
+    artists: hasNamedArtist(primary.artists) ? primary.artists : fallback.artists || [],
+    album: {
+      name: primary.album?.name || fallback.album?.name || '',
+      images:
+        Array.isArray(primary.album?.images) && primary.album.images.length
+          ? primary.album.images
+          : fallback.album?.images || [],
+    },
+  };
+}
+
+function hasNamedArtist(artists) {
+  return Array.isArray(artists) && artists.some((artist) => artist?.name);
 }
 
 function formatMessage(eventType, state) {

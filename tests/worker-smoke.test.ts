@@ -242,6 +242,77 @@ test('legacy raw refresh token in KV refreshes instead of throwing a JSON parse 
   }
 });
 
+test('scheduled sync hydrates partial Spotify track metadata before posting', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+    CRON_TRACK_CHANGE_DEBOUNCE_MS: '0',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const discordPayloads: any[] = [];
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'partial-track-id',
+          type: 'track',
+          duration_ms: 180_000,
+        },
+      });
+    }
+    if (url.pathname === '/v1/tracks/partial-track-id') {
+      return jsonResponse({
+        id: 'partial-track-id',
+        type: 'track',
+        name: 'Hydrated Track',
+        duration_ms: 180_000,
+        artists: [{ name: 'Hydrated Artist' }],
+        album: { name: 'Hydrated Album', images: [] },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/channel-id/messages') {
+      discordPayloads.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ id: 'discord-message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+    assert.equal(discordPayloads.length, 1);
+    assert.equal(discordPayloads[0].embeds[0].title, 'Hydrated Track');
+    assert.equal(discordPayloads[0].embeds[0].description, 'Hydrated Artist');
+    assert.equal(discordPayloads[0].embeds[0].fields[3].value, 'Hydrated Album');
+    assert.deepEqual(seenRequests, [
+      'GET /v1/me/player',
+      'GET /v1/tracks/partial-track-id',
+      'GET /v1/me/library/contains',
+      'POST /api/v10/channels/channel-id/messages',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('stale playback card controls do not send Spotify playback commands', async () => {
   const env = testEnv();
   await env.SPOTIFY_TOKENS.put(
