@@ -354,7 +354,10 @@ test('playback controls post a new card immediately when the track changes', asy
       });
     }
     if (url.pathname === '/v1/me/player/next') {
-      return new Response(null, { status: 204 });
+      return new Response('i05xhUT6bO-non-json-success-body', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
     }
     if (url.pathname === '/v1/me/library/contains') {
       assert.equal(url.searchParams.get('uris'), 'spotify:track:new-track-id');
@@ -439,6 +442,10 @@ test('playback controls post a new card immediately when the track changes', asy
         .filter((event) => event.event === 'spotify_control_upsert_result')
         .map((event) => ({ action: event.action, trackId: event.trackId })),
       [{ action: 'posted', trackId: 'new-track-id' }],
+    );
+    assert.deepEqual(
+      events.filter((event) => event.event === 'spotify_component_control_failed'),
+      [],
     );
     assert.deepEqual(seenRequests, [
       'GET /v1/me/player',

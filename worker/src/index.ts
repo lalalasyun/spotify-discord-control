@@ -574,7 +574,8 @@ async function spotifyApiFetch(env, endpoint, options: any = {}) {
   }
 
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
+  const contentType = response.headers.get('content-type') || '';
+  const body = text ? (contentType.includes('application/json') ? JSON.parse(text) : text) : null;
   if (!response.ok) {
     throw new Error(`Spotify ${endpoint} failed: ${response.status} ${text.slice(0, 300)}`);
   }
