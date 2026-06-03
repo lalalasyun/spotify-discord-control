@@ -13,6 +13,10 @@ const TOKEN_REFRESH_SKEW_MS = 60_000;
 const CONTROL_SYNC_PENDING_TTL_SECONDS = 60;
 const CRON_TRACK_CHANGE_DEBOUNCE_MS = 5_000;
 const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
+const PLAYBACK_SYNC_OBJECT_NAME = 'default';
+const PLAYBACK_SYNC_ACTIVE_INTERVAL_MS = 30_000;
+const PLAYBACK_SYNC_IDLE_INTERVAL_MS = 5 * 60_000;
+const PLAYBACK_SYNC_ERROR_INTERVAL_MS = 60_000;
 const SCOPES = [
   'user-read-playback-state',
   'user-read-currently-playing',
@@ -51,30 +55,92 @@ export default {
     }
   },
 
-  async scheduled(_event, env, _ctx) {
-    if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) {
+  async scheduled(_event, env, ctx) {
+    if (env.PLAYBACK_SYNC) {
+      ctx.waitUntil(startPlaybackSync(env));
       return;
     }
-
-    try {
-      if (await hasPendingControlSync(env)) {
-        logWorkerEvent('spotify_scheduled_skip', {
-          reason: 'control_sync_pending',
-        });
-        return;
-      }
-      const state = await fetchPlaybackState(env);
-      await upsertPlaybackMessage(
-        env,
-        await formatPlaybackMessage(env, 'cron', state),
-        displayTrack(state)?.id || 'none',
-        { source: 'cron' },
-      );
-    } catch (error) {
-      console.error(`scheduled refresh failed: ${errorMessage(error)}`);
-    }
+    await syncPlaybackCard(env, 'cron');
   },
 };
+
+export class PlaybackSyncDurableObject {
+  ctx: any;
+  env: any;
+
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === 'POST' && url.pathname === '/start') {
+      const force = url.searchParams.get('force') === '1';
+      const existingAlarm = await this.ctx.storage.getAlarm?.();
+      if (!force && existingAlarm) {
+        return json({ ok: true, scheduled: false, alarmAt: existingAlarm });
+      }
+      await this.scheduleNext(0);
+      return json({ ok: true, scheduled: true });
+    }
+
+    return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  async alarm() {
+    await this.syncPlayback();
+  }
+
+  async syncPlayback() {
+    let nextIntervalMs = PLAYBACK_SYNC_ERROR_INTERVAL_MS;
+    try {
+      const state = await syncPlaybackCard(this.env, 'sync');
+      nextIntervalMs = state?.isPlaying
+        ? PLAYBACK_SYNC_ACTIVE_INTERVAL_MS
+        : PLAYBACK_SYNC_IDLE_INTERVAL_MS;
+    } catch (error) {
+      const message = errorMessage(error);
+      if (message.includes('Spotify is not authorized')) {
+        nextIntervalMs = PLAYBACK_SYNC_IDLE_INTERVAL_MS;
+      } else {
+        console.error(`playback sync failed: ${message}`);
+      }
+    } finally {
+      await this.scheduleNext(nextIntervalMs);
+    }
+  }
+
+  async scheduleNext(delayMs) {
+    await this.ctx.storage.setAlarm(Date.now() + delayMs);
+  }
+}
+
+async function syncPlaybackCard(env, eventType) {
+  if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) {
+    return null;
+  }
+
+  try {
+    if (await hasPendingControlSync(env)) {
+      logWorkerEvent('spotify_scheduled_skip', {
+        reason: 'control_sync_pending',
+      });
+      return null;
+    }
+    const state = await fetchPlaybackState(env);
+    await upsertPlaybackMessage(
+      env,
+      await formatPlaybackMessage(env, eventType, state),
+      displayTrack(state)?.id || 'none',
+      { source: 'cron' },
+    );
+    return state;
+  } catch (error) {
+    console.error(`scheduled refresh failed: ${errorMessage(error)}`);
+    throw error;
+  }
+}
 
 async function handleDiscordInteraction(request, env, ctx) {
   const body = await request.text();
@@ -968,6 +1034,15 @@ async function refreshStoredCard(env, state = null) {
     displayTrack(state)?.id || 'none',
     { source: 'refresh' },
   );
+}
+
+async function startPlaybackSync(env, options: any = {}) {
+  if (!env.PLAYBACK_SYNC) return;
+  const id = env.PLAYBACK_SYNC.idFromName(PLAYBACK_SYNC_OBJECT_NAME);
+  const stub = env.PLAYBACK_SYNC.get(id);
+  const url = new URL('https://playback-sync.internal/start');
+  if (options.force) url.searchParams.set('force', '1');
+  await stub.fetch(url.toString(), { method: 'POST' });
 }
 
 async function upsertPlaybackMessage(env, message, trackId, options = { source: 'unknown' }) {

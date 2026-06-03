@@ -67,6 +67,20 @@ cat > "$config_file" <<JSON
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PLAYBACK_SYNC",
+        "class_name": "PlaybackSyncDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PlaybackSyncDurableObject"]
+    }
+  ],
   "triggers": {
     "crons": ["* * * * *"]
   }

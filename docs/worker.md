@@ -10,6 +10,12 @@ Discord slash command/button
   -> Spotify Web API
   -> Discord interaction response or channel message update
 
+Playback card sync
+  -> one-minute scheduled watchdog after deploys
+  -> Durable Object alarm
+  -> Spotify Web API every 30 seconds while active
+  -> Discord channel message update
+
 Spotify OAuth
   -> /spotify/login or /spotify login
   -> Spotify authorize URL
@@ -60,7 +66,7 @@ The deploy script:
 
 1. Creates a KV namespace when `KV_NAMESPACE_ID` is absent.
 2. Writes `wrangler.generated.jsonc`.
-3. Configures a one-minute scheduled refresh for the persistent playback card.
+3. Configures a Durable Object alarm refresh and one-minute watchdog cron for the persistent playback card.
 4. Runs `bunx wrangler deploy --secrets-file .env.worker`.
 5. Registers `/spotify` commands with Discord.
 
