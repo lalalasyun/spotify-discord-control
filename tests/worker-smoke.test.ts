@@ -49,7 +49,7 @@ test('health endpoint returns ok', async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     ok: true,
-    build: 'issue19-no-overwrite-20260603-2',
+    build: 'issue26-hydrate-track-20260604',
   });
 });
 
