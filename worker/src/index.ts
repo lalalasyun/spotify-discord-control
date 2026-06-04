@@ -1057,6 +1057,17 @@ async function upsertPlaybackMessage(env, message, trackId, options = { source: 
     lastTrackId,
   });
 
+  if (trackId === 'none') {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'no_display_track',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'skipped_no_track', messageId: lastMessageId };
+  }
+
   if (source === 'cron' && (await hasPendingControlSync(env))) {
     logWorkerEvent('spotify_card_upsert_skipped', {
       source,

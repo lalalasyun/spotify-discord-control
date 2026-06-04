@@ -313,6 +313,51 @@ test('scheduled sync hydrates partial Spotify track metadata before posting', as
   }
 });
 
+test('scheduled sync skips inactive playback instead of posting an Unknown track card', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+    if (url.pathname === '/v1/me/player') {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  const durableObject = new PlaybackSyncDurableObject(
+    {
+      storage: {
+        async setAlarm() {},
+      },
+    },
+    env,
+  );
+
+  try {
+    await durableObject.alarm();
+    assert.deepEqual(seenRequests, ['GET /v1/me/player']);
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), null);
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('stale playback card controls do not send Spotify playback commands', async () => {
   const env = testEnv();
   await env.SPOTIFY_TOKENS.put(
