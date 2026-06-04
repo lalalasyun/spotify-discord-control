@@ -7,9 +7,11 @@ const keyPair = nacl.sign.keyPair();
 
 class MemoryKv {
   values: Map<string, string>;
+  puts: Array<{ key: string; options?: Record<string, unknown> }>;
 
   constructor() {
     this.values = new Map();
+    this.puts = [];
   }
 
   async get(key: string, type = 'text') {
@@ -18,8 +20,9 @@ class MemoryKv {
     return type === 'json' ? JSON.parse(value) : value;
   }
 
-  async put(key: string, value: string) {
+  async put(key: string, value: string, options?: Record<string, unknown>) {
     this.values.set(key, value);
+    this.puts.push({ key, options });
   }
 
   async delete(key: string) {
@@ -44,7 +47,10 @@ test('health endpoint returns ok', async () => {
   const env = testEnv();
   const response = await worker.fetch(new Request('https://example.test/health'), env, ctx);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true });
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    build: 'issue26-hydrate-track-20260604',
+  });
 });
 
 test('Discord ping validates signature and returns pong', async () => {
@@ -236,6 +242,122 @@ test('legacy raw refresh token in KV refreshes instead of throwing a JSON parse 
   }
 });
 
+test('scheduled sync hydrates partial Spotify track metadata before posting', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+    CRON_TRACK_CHANGE_DEBOUNCE_MS: '0',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const discordPayloads: any[] = [];
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 42_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'partial-track-id',
+          type: 'track',
+          duration_ms: 180_000,
+        },
+      });
+    }
+    if (url.pathname === '/v1/tracks/partial-track-id') {
+      return jsonResponse({
+        id: 'partial-track-id',
+        type: 'track',
+        name: 'Hydrated Track',
+        duration_ms: 180_000,
+        artists: [{ name: 'Hydrated Artist' }],
+        album: { name: 'Hydrated Album', images: [] },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/channel-id/messages') {
+      discordPayloads.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ id: 'discord-message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+    assert.equal(discordPayloads.length, 1);
+    assert.equal(discordPayloads[0].embeds[0].title, 'Hydrated Track');
+    assert.equal(discordPayloads[0].embeds[0].description, 'Hydrated Artist');
+    assert.equal(discordPayloads[0].embeds[0].fields[3].value, 'Hydrated Album');
+    assert.deepEqual(seenRequests, [
+      'GET /v1/me/player',
+      'GET /v1/tracks/partial-track-id',
+      'GET /v1/me/library/contains',
+      'POST /api/v10/channels/channel-id/messages',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduled sync skips inactive playback instead of posting an Unknown track card', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+    if (url.pathname === '/v1/me/player') {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  const durableObject = new PlaybackSyncDurableObject(
+    {
+      storage: {
+        async setAlarm() {},
+      },
+    },
+    env,
+  );
+
+  try {
+    await durableObject.alarm();
+    assert.deepEqual(seenRequests, ['GET /v1/me/player']);
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), null);
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('stale playback card controls do not send Spotify playback commands', async () => {
   const env = testEnv();
   await env.SPOTIFY_TOKENS.put(
@@ -297,6 +419,458 @@ test('stale playback card controls do not send Spotify playback commands', async
     assert.equal(buttons[2].disabled, true);
     assert.equal(buttons[3].disabled ?? false, false);
     assert.deepEqual(seenPaths, ['/v1/me/player']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scheduled refresh skips while a control card sync is pending', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'discord:control-sync-pending',
+    JSON.stringify({ action: 'next', previousTrackId: 'old-track-id' }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  globalThis.fetch = (async (input) => {
+    throw new Error(`unexpected fetch: ${String(input)}`);
+  }) as unknown as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+    assert.deepEqual(
+      capturedLogs
+        .events()
+        .filter((event) => event.event === 'spotify_scheduled_skip')
+        .map((event) => event.reason),
+      ['control_sync_pending'],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
+test('scheduled refresh does not roll back newer control card KV state', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+    CRON_TRACK_CHANGE_DEBOUNCE_MS: '0',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+  await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'old-message-id');
+  await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'new-track-id',
+          type: 'track',
+          name: 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/channel-id/messages' && init?.method === 'POST') {
+      await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'control-message-id');
+      await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'new-track-id');
+      return jsonResponse({ id: 'cron-message-id' });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/old-message-id' &&
+      init?.method === 'GET'
+    ) {
+      return jsonResponse({
+        id: 'old-message-id',
+        content: '',
+        embeds: [{ url: 'https://open.spotify.com/track/old-track-id' }],
+        components: playbackComponents(true),
+      });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/old-message-id' &&
+      init?.method === 'PATCH'
+    ) {
+      return jsonResponse({ id: 'old-message-id' });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/cron-message-id' &&
+      init?.method === 'PATCH'
+    ) {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.components[0].components[0].disabled, true);
+      assert.equal(body.components[0].components[1].disabled, true);
+      assert.equal(body.components[0].components[2].disabled, true);
+      return jsonResponse({ id: 'cron-message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'control-message-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
+    assert.deepEqual(
+      capturedLogs
+        .events()
+        .filter((event) => event.event === 'spotify_card_upsert_stale_write_skipped')
+        .map((event) => ({
+          messageId: event.messageId,
+          currentMessageId: event.currentMessageId,
+          currentTrackId: event.currentTrackId,
+        })),
+      [
+        {
+          messageId: 'cron-message-id',
+          currentMessageId: 'control-message-id',
+          currentTrackId: 'new-track-id',
+        },
+      ],
+    );
+    assert.deepEqual(seenRequests, [
+      'GET /v1/me/player',
+      'GET /v1/me/library/contains',
+      'POST /api/v10/channels/channel-id/messages',
+      'GET /api/v10/channels/channel-id/messages/old-message-id',
+      'PATCH /api/v10/channels/channel-id/messages/old-message-id',
+      'PATCH /api/v10/channels/channel-id/messages/cron-message-id',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
+test('scheduled refresh skips changed-track posts when control sync appears during debounce', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+    CRON_TRACK_CHANGE_DEBOUNCE_MS: '10',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+  await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'old-message-id');
+  await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  const seenRequests: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'new-track-id',
+          type: 'track',
+          name: 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      setTimeout(() => {
+        env.SPOTIFY_TOKENS.put(
+          'discord:control-sync-pending',
+          JSON.stringify({ action: 'next', previousTrackId: 'old-track-id' }),
+        );
+      }, 0);
+      return jsonResponse([false]);
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    await worker.scheduled({}, env, ctx);
+
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'old-message-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'old-track-id');
+    assert.deepEqual(
+      capturedLogs
+        .events()
+        .filter((event) => event.event === 'spotify_card_upsert_skipped')
+        .map((event) => event.reason),
+      ['control_sync_pending_after_debounce'],
+    );
+    assert.deepEqual(seenRequests, ['GET /v1/me/player', 'GET /v1/me/library/contains']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
+test('playback controls post a new card immediately when the track changes', async () => {
+  const env = {
+    ...testEnv(),
+    DISCORD_CHANNEL_ID: 'channel-id',
+    DISCORD_BOT_TOKEN: 'discord-bot-token',
+    PLAYBACK_CONTROL_RETRY_DELAYS_MS: '0,0',
+  };
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+  await env.SPOTIFY_TOKENS.put('discord:last-message-id', 'message-id');
+  await env.SPOTIFY_TOKENS.put('discord:last-track-id', 'old-track-id');
+
+  const originalFetch = globalThis.fetch;
+  const capturedLogs = captureConsoleLogs();
+  const waitUntilPromises: Promise<unknown>[] = [];
+  const waitUntilCtx = {
+    waitUntil(promise: Promise<unknown>) {
+      waitUntilPromises.push(promise);
+    },
+  };
+  const seenRequests: string[] = [];
+  let playerFetches = 0;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    seenRequests.push(`${init?.method || 'GET'} ${url.pathname}`);
+
+    if (url.pathname === '/v1/me/player') {
+      playerFetches += 1;
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: playerFetches < 3 ? 42_000 : 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: playerFetches < 3 ? 'old-track-id' : 'new-track-id',
+          type: 'track',
+          name: playerFetches < 3 ? 'Old Track' : 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/player/next') {
+      return new Response('i05xhUT6bO-non-json-success-body', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+    if (url.pathname === '/v1/me/library/contains') {
+      assert.equal(url.searchParams.get('uris'), 'spotify:track:new-track-id');
+      return jsonResponse([false]);
+    }
+    if (url.pathname === '/api/v10/channels/channel-id/messages' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.embeds[0].title, 'New Track');
+      return jsonResponse({ id: 'new-message-id' });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/message-id' &&
+      init?.method === 'GET'
+    ) {
+      return jsonResponse({
+        id: 'message-id',
+        content: '',
+        embeds: [{ url: 'https://open.spotify.com/track/old-track-id' }],
+        components: playbackComponents(true),
+      });
+    }
+    if (
+      url.pathname === '/api/v10/channels/channel-id/messages/message-id' &&
+      init?.method === 'PATCH'
+    ) {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.components[0].components[0].disabled, true);
+      assert.equal(body.components[0].components[1].disabled, true);
+      assert.equal(body.components[0].components[2].disabled, true);
+      return jsonResponse({ id: 'message-id' });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await worker.fetch(
+      signedInteractionRequest({
+        type: 3,
+        data: { custom_id: 'spotify_worker:v1:next' },
+        message: {
+          id: 'message-id',
+          content: '',
+          embeds: [{ url: 'https://open.spotify.com/track/old-track-id' }],
+          components: playbackComponents(true),
+        },
+      }),
+      env,
+      waitUntilCtx,
+    );
+    await Promise.all(waitUntilPromises);
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.type, 7);
+    assert.equal(payload.data.embeds[0].url, 'https://open.spotify.com/track/old-track-id');
+    assert.equal(payload.data.components[0].components[0].disabled, true);
+    assert.equal(payload.data.components[0].components[1].disabled, true);
+    assert.equal(payload.data.components[0].components[2].disabled, true);
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-message-id'), 'new-message-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:last-track-id'), 'new-track-id');
+    assert.equal(await env.SPOTIFY_TOKENS.get('discord:control-sync-pending'), null);
+    assert.deepEqual(
+      env.SPOTIFY_TOKENS.puts
+        .filter((put) => put.key === 'discord:control-sync-pending')
+        .map((put) => put.options?.expirationTtl),
+      [60],
+    );
+    const events = capturedLogs.events();
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_sync_pending_set')
+        .map((event) => ({ action: event.action, previousTrackId: event.previousTrackId })),
+      [{ action: 'next', previousTrackId: 'old-track-id' }],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_component_branch')
+        .map((event) => event.branch),
+      ['queue_new_card_for_next_prev'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_upsert_retry')
+        .map((event) => event.trackId),
+      ['new-track-id'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_card_upsert_result')
+        .map((event) => event.action),
+      ['posted'],
+    );
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === 'spotify_control_upsert_result')
+        .map((event) => ({ action: event.action, trackId: event.trackId })),
+      [{ action: 'posted', trackId: 'new-track-id' }],
+    );
+    assert.deepEqual(
+      events.filter((event) => event.event === 'spotify_component_control_failed'),
+      [],
+    );
+    assert.deepEqual(seenRequests, [
+      'GET /v1/me/player',
+      'POST /v1/me/player/next',
+      'GET /v1/me/player',
+      'GET /v1/me/player',
+      'GET /v1/me/library/contains',
+      'POST /api/v10/channels/channel-id/messages',
+      'GET /api/v10/channels/channel-id/messages/message-id',
+      'PATCH /api/v10/channels/channel-id/messages/message-id',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    capturedLogs.restore();
+  }
+});
+
+test('next and prev controls never render a fetched track into the clicked card', async () => {
+  const env = testEnv();
+  await env.SPOTIFY_TOKENS.put(
+    'spotify:tokens',
+    JSON.stringify({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname === '/v1/me/player') {
+      return jsonResponse({
+        is_playing: true,
+        progress_ms: 1_000,
+        device: { id: 'device-id', name: 'Desk', type: 'Computer', is_active: true },
+        item: {
+          id: 'new-track-id',
+          type: 'track',
+          name: 'New Track',
+          duration_ms: 180_000,
+          artists: [{ name: 'Artist' }],
+          album: { name: 'Album', images: [] },
+        },
+      });
+    }
+    if (url.pathname === '/v1/me/player/next') {
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch: ${url.href}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await worker.fetch(
+      signedInteractionRequest({
+        type: 3,
+        data: { custom_id: 'spotify_worker:v1:next' },
+        message: {
+          id: 'message-id',
+          content: '',
+          embeds: [{ title: 'Old Track', url: 'https://open.spotify.com/track/old-track-id' }],
+          components: playbackComponents(true),
+        },
+      }),
+      env,
+      ctx,
+    );
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.type, 7);
+    assert.equal(payload.data.embeds[0].title, 'Old Track');
+    assert.equal(payload.data.embeds[0].url, 'https://open.spotify.com/track/old-track-id');
+    assert.equal(payload.data.components[0].components[0].disabled, true);
+    assert.equal(payload.data.components[0].components[1].disabled, true);
+    assert.equal(payload.data.components[0].components[2].disabled, true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -440,6 +1014,7 @@ test('Durable Object alarm refreshes playback card and schedules active playback
   const env = testEnv();
   env.DISCORD_BOT_TOKEN = 'discord-bot-token';
   env.DISCORD_CHANNEL_ID = 'discord-channel-id';
+  env.CRON_TRACK_CHANGE_DEBOUNCE_MS = '0';
   await env.SPOTIFY_TOKENS.put(
     'spotify:tokens',
     JSON.stringify({
@@ -569,6 +1144,23 @@ function jsonResponse(body, status = 200) {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function captureConsoleLogs() {
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = ((...values: unknown[]) => {
+    lines.push(values.map(String).join(' '));
+  }) as typeof console.log;
+
+  return {
+    events() {
+      return lines.map((line) => JSON.parse(line));
+    },
+    restore() {
+      console.log = originalLog;
+    },
+  };
 }
 
 function playbackComponents(isPlaying: boolean) {

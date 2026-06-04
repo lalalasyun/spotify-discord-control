@@ -6,8 +6,13 @@ const SPOTIFY_API = 'https://api.spotify.com';
 const TOKEN_KEY = 'spotify:tokens';
 const MESSAGE_ID_KEY = 'discord:last-message-id';
 const TRACK_ID_KEY = 'discord:last-track-id';
+const CONTROL_SYNC_PENDING_KEY = 'discord:control-sync-pending';
+const BUILD_ID = 'issue26-hydrate-track-20260604';
 const COMPONENT_PREFIX = 'spotify_worker:v1:';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
+const CONTROL_SYNC_PENDING_TTL_SECONDS = 60;
+const CRON_TRACK_CHANGE_DEBOUNCE_MS = 5_000;
+const PLAYBACK_CONTROL_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000];
 const PLAYBACK_SYNC_OBJECT_NAME = 'default';
 const PLAYBACK_SYNC_ACTIVE_INTERVAL_MS = 30_000;
 const PLAYBACK_SYNC_IDLE_INTERVAL_MS = 5 * 60_000;
@@ -29,7 +34,7 @@ export default {
       const url = new URL(request.url);
 
       if (request.method === 'GET' && url.pathname === '/health') {
-        return json({ ok: true });
+        return json({ ok: true, build: BUILD_ID });
       }
 
       if (request.method === 'GET' && url.pathname === '/spotify/login') {
@@ -37,7 +42,7 @@ export default {
       }
 
       if (request.method === 'GET' && url.pathname === redirectPath(env)) {
-        return handleSpotifyCallback(request, env, ctx);
+        return handleSpotifyCallback(request, env);
       }
 
       if (request.method === 'POST' && url.pathname === '/discord/interactions') {
@@ -51,7 +56,11 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(startPlaybackSync(env));
+    if (env.PLAYBACK_SYNC) {
+      ctx.waitUntil(startPlaybackSync(env));
+      return;
+    }
+    await syncPlaybackCard(env, 'cron');
   },
 };
 
@@ -84,15 +93,9 @@ export class PlaybackSyncDurableObject {
   }
 
   async syncPlayback() {
-    if (!this.env.DISCORD_CHANNEL_ID || !this.env.DISCORD_BOT_TOKEN) {
-      await this.scheduleNext(PLAYBACK_SYNC_IDLE_INTERVAL_MS);
-      return;
-    }
-
     let nextIntervalMs = PLAYBACK_SYNC_ERROR_INTERVAL_MS;
     try {
-      const state = await fetchPlaybackState(this.env);
-      await refreshStoredCard(this.env, state, 'sync');
+      const state = await syncPlaybackCard(this.env, 'sync');
       nextIntervalMs = state?.isPlaying
         ? PLAYBACK_SYNC_ACTIVE_INTERVAL_MS
         : PLAYBACK_SYNC_IDLE_INTERVAL_MS;
@@ -113,6 +116,32 @@ export class PlaybackSyncDurableObject {
   }
 }
 
+async function syncPlaybackCard(env, eventType) {
+  if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) {
+    return null;
+  }
+
+  try {
+    if (await hasPendingControlSync(env)) {
+      logWorkerEvent('spotify_scheduled_skip', {
+        reason: 'control_sync_pending',
+      });
+      return null;
+    }
+    const state = await fetchPlaybackState(env);
+    await upsertPlaybackMessage(
+      env,
+      await formatPlaybackMessage(env, eventType, state),
+      displayTrack(state)?.id || 'none',
+      { source: 'cron' },
+    );
+    return state;
+  } catch (error) {
+    console.error(`scheduled refresh failed: ${errorMessage(error)}`);
+    throw error;
+  }
+}
+
 async function handleDiscordInteraction(request, env, ctx) {
   const body = await request.text();
   if (!verifyDiscordRequest(request, env, body)) {
@@ -126,7 +155,7 @@ async function handleDiscordInteraction(request, env, ctx) {
     }
 
     if (interaction.type === 2) {
-      return await handleApplicationCommand(interaction, env, request, ctx);
+      return await handleApplicationCommand(interaction, env, request);
     }
 
     if (interaction.type === 3) {
@@ -139,7 +168,7 @@ async function handleDiscordInteraction(request, env, ctx) {
   return interactionMessage('Unsupported interaction.', true);
 }
 
-async function handleApplicationCommand(interaction, env, request, ctx) {
+async function handleApplicationCommand(interaction, env, request) {
   const subcommand = applicationCommandSubcommand(interaction);
 
   if (subcommand === 'login') {
@@ -151,8 +180,9 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
     const state = await fetchPlaybackState(env);
     const message = await formatPlaybackMessage(env, subcommand, state);
     if (subcommand === 'card' && env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
-      const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none');
-      ctx.waitUntil(startPlaybackSync(env, { force: true }));
+      const result = await upsertPlaybackMessage(env, message, displayTrack(state)?.id || 'none', {
+        source: 'command',
+      });
       return interactionMessage(`Playback card ${result.action}.`, true);
     }
     return json({ type: 4, data: withAllowedMentions(message) });
@@ -161,7 +191,6 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
   if (PLAYBACK_ACTIONS.has(subcommand)) {
     await controlPlayback(env, subcommand);
     const state = await fetchPlaybackState(env);
-    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 4,
       data: withAllowedMentions(await formatPlaybackMessage(env, 'control', state)),
@@ -171,7 +200,6 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
   if (subcommand === 'like') {
     const result = await toggleCurrentTrackSaved(env);
     const state = await fetchPlaybackState(env);
-    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 4,
       data: withAllowedMentions({
@@ -191,13 +219,28 @@ function applicationCommandSubcommand(interaction) {
 async function handleComponentInteraction(interaction, env, ctx) {
   const action = actionFromCustomId(interaction?.data?.custom_id || '');
   if (!CONTROL_ACTIONS.has(action)) {
+    logWorkerEvent('spotify_component_unknown_control', {
+      customId: interaction?.data?.custom_id || '',
+    });
     return interactionMessage('Unknown control.', true);
   }
 
   const messageId = interaction?.message?.id || '';
   const lastMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
   const isStale = Boolean(messageId && lastMessageId && messageId !== lastMessageId);
+  logWorkerEvent('spotify_component_received', {
+    action,
+    messageId,
+    lastMessageId,
+    messageTrackId: messageTrackIdFromInteraction(interaction),
+    isStale,
+  });
   if (isStale && PLAYBACK_ACTIONS.has(action)) {
+    logWorkerEvent('spotify_component_branch', {
+      action,
+      messageId,
+      branch: 'stale_disable_clicked_card',
+    });
     return json({
       type: 7,
       data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
@@ -207,17 +250,36 @@ async function handleComponentInteraction(interaction, env, ctx) {
   if (action === 'like') {
     const result = await toggleCurrentTrackSaved(env);
     const nextMessage = updateLikeButton(interaction.message, result.saved);
+    logWorkerEvent('spotify_component_branch', {
+      action,
+      messageId,
+      branch: 'like_update_clicked_card',
+      saved: result.saved,
+      trackId: result.track?.id || '',
+    });
     ctx.waitUntil(refreshStoredCard(env));
-    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({ type: 7, data: withAllowedMentions(nextMessage) });
   }
 
   const state = await fetchPlaybackState(env);
   const messageTrackId = messageTrackIdFromInteraction(interaction);
   const currentTrackId = displayTrack(state)?.id || '';
+  logWorkerEvent('spotify_component_playback_state', {
+    action,
+    messageId,
+    messageTrackId,
+    currentTrackId,
+    playbackState: state?.playbackState || '',
+  });
   if (messageTrackId && currentTrackId && messageTrackId !== currentTrackId) {
+    logWorkerEvent('spotify_component_branch', {
+      action,
+      messageId,
+      branch: 'track_mismatch_disable_clicked_card',
+      messageTrackId,
+      currentTrackId,
+    });
     ctx.waitUntil(refreshStoredCard(env, state));
-    ctx.waitUntil(startPlaybackSync(env, { force: true }));
     return json({
       type: 7,
       data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
@@ -230,16 +292,163 @@ async function handleComponentInteraction(interaction, env, ctx) {
     await controlPlayback(env, action, state);
     nextState = await fetchPlaybackState(env);
   } catch (error) {
+    logWorkerEvent('spotify_component_control_failed', {
+      action,
+      messageId,
+      error: errorMessage(error),
+    });
     console.error(`playback control failed: ${errorMessage(error)}`);
     nextState = await fetchPlaybackState(env).catch(() => state);
     eventType = 'control failed';
   }
 
-  ctx.waitUntil(startPlaybackSync(env, { force: true }));
+  const previousTrackId = currentTrackId || 'none';
+  if (eventType === 'control' && (action === 'next' || action === 'prev')) {
+    if (env.DISCORD_CHANNEL_ID && env.DISCORD_BOT_TOKEN) {
+      await markControlSyncPending(env, {
+        action,
+        previousTrackId,
+        nextTrackId: displayTrack(nextState)?.id || 'none',
+      });
+      logWorkerEvent('spotify_component_branch', {
+        action,
+        messageId,
+        branch: 'queue_new_card_for_next_prev',
+        previousTrackId,
+        nextTrackId: displayTrack(nextState)?.id || 'none',
+      });
+      ctx.waitUntil(upsertPlaybackMessageAfterControl(env, nextState, previousTrackId, eventType));
+    } else {
+      logWorkerEvent('spotify_component_branch', {
+        action,
+        messageId,
+        branch: 'disable_clicked_card_without_discord_config',
+        previousTrackId,
+      });
+    }
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
+  }
+
+  const nextTrackId = displayTrack(nextState)?.id || 'none';
+  if (
+    eventType === 'control' &&
+    nextTrackId !== previousTrackId &&
+    env.DISCORD_CHANNEL_ID &&
+    env.DISCORD_BOT_TOKEN
+  ) {
+    await markControlSyncPending(env, {
+      action,
+      previousTrackId,
+      nextTrackId,
+    });
+    logWorkerEvent('spotify_component_branch', {
+      action,
+      messageId,
+      branch: 'queue_new_card_for_changed_track',
+      previousTrackId,
+      nextTrackId,
+    });
+    ctx.waitUntil(upsertPlaybackMessageAfterControl(env, nextState, previousTrackId, eventType));
+    return json({
+      type: 7,
+      data: withAllowedMentions(disablePlaybackButtons(interaction.message)),
+    });
+  }
+
+  logWorkerEvent('spotify_component_branch', {
+    action,
+    messageId,
+    branch: 'update_clicked_card',
+    previousTrackId,
+    nextTrackId,
+    eventType,
+  });
   return json({
     type: 7,
     data: withAllowedMentions(await formatPlaybackMessage(env, eventType, nextState)),
   });
+}
+
+async function upsertPlaybackMessageAfterControl(env, initialState, previousTrackId, eventType) {
+  try {
+    let state = initialState;
+    let trackId = displayTrack(state)?.id || 'none';
+    const retryDelays = playbackControlRetryDelays(env);
+    logWorkerEvent('spotify_control_upsert_start', {
+      eventType,
+      previousTrackId,
+      initialTrackId: trackId,
+      retryCount: retryDelays.length,
+    });
+
+    for (const [attemptIndex, retryDelay] of retryDelays.entries()) {
+      if (trackId !== previousTrackId) break;
+      await sleep(retryDelay);
+      state = await fetchPlaybackState(env);
+      trackId = displayTrack(state)?.id || 'none';
+      logWorkerEvent('spotify_control_upsert_retry', {
+        eventType,
+        previousTrackId,
+        trackId,
+        attempt: attemptIndex + 1,
+        delayMs: retryDelay,
+      });
+    }
+
+    const result = await upsertPlaybackMessage(
+      env,
+      await formatPlaybackMessage(env, eventType, state),
+      trackId,
+      { source: 'control' },
+    );
+    logWorkerEvent('spotify_control_upsert_result', {
+      eventType,
+      previousTrackId,
+      trackId,
+      action: result.action,
+      messageId: result.messageId,
+    });
+  } finally {
+    await clearControlSyncPending(env);
+  }
+}
+
+function playbackControlRetryDelays(env) {
+  if (!env.PLAYBACK_CONTROL_RETRY_DELAYS_MS) return PLAYBACK_CONTROL_RETRY_DELAYS_MS;
+
+  const parsed = String(env.PLAYBACK_CONTROL_RETRY_DELAYS_MS)
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  return parsed.length ? parsed : PLAYBACK_CONTROL_RETRY_DELAYS_MS;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function hasPendingControlSync(env) {
+  return Boolean(await env.SPOTIFY_TOKENS.get(CONTROL_SYNC_PENDING_KEY));
+}
+
+async function markControlSyncPending(env, details) {
+  await env.SPOTIFY_TOKENS.put(
+    CONTROL_SYNC_PENDING_KEY,
+    JSON.stringify({
+      ...details,
+      createdAt: new Date().toISOString(),
+    }),
+    { expirationTtl: CONTROL_SYNC_PENDING_TTL_SECONDS },
+  );
+  logWorkerEvent('spotify_control_sync_pending_set', details);
+}
+
+async function clearControlSyncPending(env) {
+  await env.SPOTIFY_TOKENS.delete(CONTROL_SYNC_PENDING_KEY);
+  logWorkerEvent('spotify_control_sync_pending_cleared');
 }
 
 function verifyDiscordRequest(request, env, body) {
@@ -299,7 +508,7 @@ async function createAuthorizeUrl(env, request) {
   return authorizeUrl.toString();
 }
 
-async function handleSpotifyCallback(request, env, ctx = null) {
+async function handleSpotifyCallback(request, env) {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
@@ -322,13 +531,9 @@ async function handleSpotifyCallback(request, env, ctx = null) {
   });
   await saveTokens(env, tokens);
   await env.SPOTIFY_TOKENS.delete(stateKey);
-  ctx?.waitUntil(startPlaybackSync(env, { force: true }));
 
   return new Response('Spotify authorization complete. You can return to Discord.', {
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Referrer-Policy': 'no-referrer',
-    },
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
   });
 }
 
@@ -483,7 +688,8 @@ async function spotifyApiFetch(env, endpoint, options: any = {}) {
   }
 
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
+  const contentType = response.headers.get('content-type') || '';
+  const body = text ? (contentType.includes('application/json') ? JSON.parse(text) : text) : null;
   if (!response.ok) {
     throw new Error(`Spotify ${endpoint} failed: ${response.status} ${text.slice(0, 300)}`);
   }
@@ -492,7 +698,7 @@ async function spotifyApiFetch(env, endpoint, options: any = {}) {
 
 async function fetchPlaybackState(env) {
   const response = await spotifyApiFetch(env, '/v1/me/player');
-  return normalizePlaybackState(response.body);
+  return hydratePlaybackTrack(env, normalizePlaybackState(response.body));
 }
 
 async function controlPlayback(env, action, playbackState = null) {
@@ -593,16 +799,62 @@ function normalizeTrack(track) {
   if (!track) return null;
   return {
     id: track.id || '',
-    name: track.name || 'Unknown track',
+    name: track.name || '',
     durationMs: track.duration_ms || 0,
     artists: Array.isArray(track.artists)
-      ? track.artists.map((artist) => ({ name: artist.name || 'Unknown artist' }))
+      ? track.artists.map((artist) => ({ name: artist.name || '' }))
       : [],
     album: {
-      name: track.album?.name || 'Unknown album',
+      name: track.album?.name || '',
       images: Array.isArray(track.album?.images) ? track.album.images : [],
     },
   };
+}
+
+async function hydratePlaybackTrack(env, state) {
+  const track = state?.track;
+  if (!track?.id || hasDisplayMetadata(track)) return state;
+
+  try {
+    const response = await spotifyApiFetch(env, `/v1/tracks/${encodeURIComponent(track.id)}`);
+    const hydrated = normalizeTrack(response.body);
+    if (!hydrated?.id) return state;
+    const merged = mergeTrack(track, hydrated);
+    return {
+      ...state,
+      track: merged,
+      lastTrack: merged,
+    };
+  } catch (error) {
+    console.error(`track metadata hydrate failed: ${errorMessage(error)}`);
+    return state;
+  }
+}
+
+function hasDisplayMetadata(track) {
+  const hasName = Boolean(track?.name);
+  const hasArtist = Array.isArray(track?.artists) && track.artists.some((artist) => artist?.name);
+  return hasName && hasArtist;
+}
+
+function mergeTrack(primary, fallback) {
+  return {
+    id: primary.id || fallback.id || '',
+    name: primary.name || fallback.name || '',
+    durationMs: primary.durationMs || fallback.durationMs || 0,
+    artists: hasNamedArtist(primary.artists) ? primary.artists : fallback.artists || [],
+    album: {
+      name: primary.album?.name || fallback.album?.name || '',
+      images:
+        Array.isArray(primary.album?.images) && primary.album.images.length
+          ? primary.album.images
+          : fallback.album?.images || [],
+    },
+  };
+}
+
+function hasNamedArtist(artists) {
+  return Array.isArray(artists) && artists.some((artist) => artist?.name);
 }
 
 function formatMessage(eventType, state) {
@@ -770,13 +1022,17 @@ function updateLikeButton(message, saved) {
   };
 }
 
-async function refreshStoredCard(env, state = null, eventType = 'refresh') {
+async function refreshStoredCard(env, state = null) {
   if (!env.DISCORD_CHANNEL_ID || !env.DISCORD_BOT_TOKEN) return;
   state ??= await fetchPlaybackState(env);
+  logWorkerEvent('spotify_refresh_stored_card', {
+    trackId: displayTrack(state)?.id || 'none',
+  });
   await upsertPlaybackMessage(
     env,
-    await formatPlaybackMessage(env, eventType, state),
+    await formatPlaybackMessage(env, 'refresh', state),
     displayTrack(state)?.id || 'none',
+    { source: 'refresh' },
   );
 }
 
@@ -789,15 +1045,114 @@ async function startPlaybackSync(env, options: any = {}) {
   await stub.fetch(url.toString(), { method: 'POST' });
 }
 
-async function upsertPlaybackMessage(env, message, trackId) {
+async function upsertPlaybackMessage(env, message, trackId, options = { source: 'unknown' }) {
+  const source = options.source || 'unknown';
   const lastMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
   const lastTrackId = await env.SPOTIFY_TOKENS.get(TRACK_ID_KEY);
+  const snapshot = { messageId: lastMessageId, trackId: lastTrackId };
+  logWorkerEvent('spotify_card_upsert_start', {
+    source,
+    trackId,
+    lastMessageId,
+    lastTrackId,
+  });
+
+  if (trackId === 'none') {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'no_display_track',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'skipped_no_track', messageId: lastMessageId };
+  }
+
+  if (source === 'cron' && (await hasPendingControlSync(env))) {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'control_sync_pending',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'skipped_pending', messageId: lastMessageId };
+  }
+
+  if (source === 'cron' && (await staleKvSnapshot(env, snapshot)).changed) {
+    logWorkerEvent('spotify_card_upsert_skipped', {
+      source,
+      reason: 'stale_snapshot_before_discord_write',
+      trackId,
+      lastMessageId,
+      lastTrackId,
+    });
+    return { action: 'stale_skipped', messageId: lastMessageId };
+  }
+
+  if (source === 'cron' && lastTrackId !== trackId) {
+    const debounceMs = cronTrackChangeDebounceMs(env);
+    if (debounceMs > 0) {
+      logWorkerEvent('spotify_card_upsert_debounce', {
+        source,
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        delayMs: debounceMs,
+      });
+      await sleep(debounceMs);
+    }
+
+    if (await hasPendingControlSync(env)) {
+      logWorkerEvent('spotify_card_upsert_skipped', {
+        source,
+        reason: 'control_sync_pending_after_debounce',
+        trackId,
+        lastMessageId,
+        lastTrackId,
+      });
+      return { action: 'skipped_pending', messageId: lastMessageId };
+    }
+
+    const stale = await staleKvSnapshot(env, snapshot);
+    if (stale.changed) {
+      logWorkerEvent('spotify_card_upsert_skipped', {
+        source,
+        reason: 'stale_snapshot_after_debounce',
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        currentMessageId: stale.currentMessageId,
+        currentTrackId: stale.currentTrackId,
+      });
+      return { action: 'stale_skipped', messageId: stale.currentMessageId || lastMessageId };
+    }
+  }
 
   if (
     lastMessageId &&
     lastTrackId === trackId &&
     (await editMessage(env, lastMessageId, message))
   ) {
+    if (source === 'cron') {
+      const stale = await staleKvSnapshot(env, snapshot);
+      if (stale.changed) {
+        await disableStaleCronMessage(env, lastMessageId, message, {
+          trackId,
+          lastMessageId,
+          lastTrackId,
+          currentMessageId: stale.currentMessageId,
+          currentTrackId: stale.currentTrackId,
+        });
+        return { action: 'stale_skipped', messageId: stale.currentMessageId || lastMessageId };
+      }
+    }
+    logWorkerEvent('spotify_card_upsert_result', {
+      source,
+      action: 'edited',
+      trackId,
+      messageId: lastMessageId,
+    });
     return { action: 'edited', messageId: lastMessageId };
   }
 
@@ -810,13 +1165,90 @@ async function upsertPlaybackMessage(env, message, trackId) {
   if (lastMessageId && lastMessageId !== createdMessage.id) {
     const previous = await fetchMessage(env, lastMessageId);
     if (!previous?.unavailable) {
-      await editMessage(env, lastMessageId, disablePlaybackButtons(previous)).catch(() => {});
+      const disabled = await editMessage(
+        env,
+        lastMessageId,
+        disablePlaybackButtons(previous),
+      ).catch((error) => {
+        logWorkerEvent('spotify_card_disable_previous_failed', {
+          messageId: lastMessageId,
+          error: errorMessage(error),
+        });
+        return false;
+      });
+      logWorkerEvent('spotify_card_disable_previous_result', {
+        source,
+        previousMessageId: lastMessageId,
+        disabled,
+      });
+    } else {
+      logWorkerEvent('spotify_card_disable_previous_skipped', {
+        previousMessageId: lastMessageId,
+        status: previous?.status,
+      });
+    }
+  }
+
+  if (source === 'cron') {
+    const stale = await staleKvSnapshot(env, snapshot);
+    if (stale.changed) {
+      await disableStaleCronMessage(env, createdMessage.id, message, {
+        trackId,
+        lastMessageId,
+        lastTrackId,
+        currentMessageId: stale.currentMessageId,
+        currentTrackId: stale.currentTrackId,
+      });
+      return { action: 'stale_skipped', messageId: stale.currentMessageId || createdMessage.id };
     }
   }
 
   await env.SPOTIFY_TOKENS.put(MESSAGE_ID_KEY, createdMessage.id);
   await env.SPOTIFY_TOKENS.put(TRACK_ID_KEY, trackId);
+  logWorkerEvent('spotify_card_upsert_result', {
+    source,
+    action: 'posted',
+    trackId,
+    messageId: createdMessage.id,
+    previousMessageId: lastMessageId,
+  });
   return { action: 'posted', messageId: createdMessage.id };
+}
+
+async function staleKvSnapshot(env, snapshot) {
+  const currentMessageId = await env.SPOTIFY_TOKENS.get(MESSAGE_ID_KEY);
+  const currentTrackId = await env.SPOTIFY_TOKENS.get(TRACK_ID_KEY);
+  return {
+    changed: currentMessageId !== snapshot.messageId || currentTrackId !== snapshot.trackId,
+    currentMessageId,
+    currentTrackId,
+  };
+}
+
+function cronTrackChangeDebounceMs(env) {
+  if (!env.CRON_TRACK_CHANGE_DEBOUNCE_MS) return CRON_TRACK_CHANGE_DEBOUNCE_MS;
+  const parsed = Number(env.CRON_TRACK_CHANGE_DEBOUNCE_MS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CRON_TRACK_CHANGE_DEBOUNCE_MS;
+}
+
+async function disableStaleCronMessage(env, messageId, message, details) {
+  const disabled = await editMessage(env, messageId, disablePlaybackButtons(message)).catch(
+    (error) => {
+      logWorkerEvent('spotify_card_stale_cron_disable_failed', {
+        source: 'cron',
+        messageId,
+        error: errorMessage(error),
+        ...details,
+      });
+      return false;
+    },
+  );
+  logWorkerEvent('spotify_card_upsert_stale_write_skipped', {
+    source: 'cron',
+    messageId,
+    disabled,
+    ...details,
+  });
 }
 
 async function editMessage(env, messageId, message) {
@@ -827,17 +1259,28 @@ async function editMessage(env, messageId, message) {
     message,
     [403, 404],
   );
+  logWorkerEvent('spotify_discord_message_edit', {
+    messageId,
+    status: result?.status || 200,
+    unavailable: Boolean(result?.unavailable),
+  });
   return !result?.unavailable;
 }
 
 async function fetchMessage(env, messageId) {
-  return discordRequest(
+  const result = await discordRequest(
     env,
     'GET',
     `/channels/${env.DISCORD_CHANNEL_ID}/messages/${messageId}`,
     null,
     [403, 404],
   );
+  logWorkerEvent('spotify_discord_message_fetch', {
+    messageId,
+    status: result?.status || 200,
+    unavailable: Boolean(result?.unavailable),
+  });
+  return result;
 }
 
 async function discordRequest(env, method, endpoint, payload = null, softStatuses = []) {
@@ -851,11 +1294,21 @@ async function discordRequest(env, method, endpoint, payload = null, softStatuse
   });
 
   if (softStatuses.includes(response.status)) {
+    logWorkerEvent('spotify_discord_request_soft_status', {
+      method,
+      endpoint: sanitizeDiscordEndpoint(endpoint),
+      status: response.status,
+    });
     return { unavailable: true, status: response.status };
   }
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
+    logWorkerEvent('spotify_discord_request_failed', {
+      method,
+      endpoint: sanitizeDiscordEndpoint(endpoint),
+      status: response.status,
+    });
     throw new Error(
       `Discord ${method} ${endpoint} failed: ${response.status} ${body.slice(0, 300)}`,
     );
@@ -910,6 +1363,37 @@ function json(payload, status = 200) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function logWorkerEvent(event, details: Record<string, unknown> = {}) {
+  const payload = {
+    event,
+    build: BUILD_ID,
+    ...sanitizeLogDetails(details),
+  };
+  console.log(JSON.stringify(payload));
+}
+
+function sanitizeLogDetails(details) {
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [key, sanitizeLogValue(value)]),
+  );
+}
+
+function sanitizeLogValue(value) {
+  if (value === undefined || value === null) return value;
+  if (typeof value === 'string') return value.slice(0, 300);
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeLogValue(item));
+  if (typeof value === 'object') return sanitizeLogDetails(value);
+  return String(value).slice(0, 300);
+}
+
+function sanitizeDiscordEndpoint(endpoint) {
+  return String(endpoint).replace(
+    /\/channels\/([^/]+)\/messages\/([^/]+)/,
+    '/channels/$1/messages/:id',
+  );
 }
 
 function hexToBytes(hex) {
