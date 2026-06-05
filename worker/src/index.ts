@@ -144,7 +144,7 @@ async function handleApplicationCommand(interaction, env, request, ctx) {
 
   if (subcommand === 'login') {
     const authorizeUrl = await createAuthorizeUrl(env, request);
-    return interactionMessage(`Open this Spotify authorization URL:\n${authorizeUrl}`, true);
+    return spotifyLoginMessage(authorizeUrl);
   }
 
   if (subcommand === 'card' || subcommand === 'now') {
@@ -873,6 +873,36 @@ function interactionMessage(content, ephemeral = false) {
       flags: ephemeral ? 64 : undefined,
       allowed_mentions: { parse: [] },
     },
+  });
+}
+
+function spotifyLoginMessage(authorizeUrl) {
+  return json({
+    type: 4,
+    data: withAllowedMentions({
+      content: '',
+      flags: 64,
+      embeds: [
+        {
+          title: 'Spotify authorization',
+          description: 'Connect Spotify to enable the playback card and controls.',
+          color: 0x1db954,
+        },
+      ],
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: 'Authorize Spotify',
+              url: authorizeUrl,
+            },
+          ],
+        },
+      ],
+    }),
   });
 }
 

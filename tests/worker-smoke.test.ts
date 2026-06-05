@@ -71,7 +71,7 @@ test('invalid Discord signature returns 401', async () => {
   assert.equal(response.status, 401);
 });
 
-test('/spotify login returns an authorization URL', async () => {
+test('/spotify login embeds the authorization URL in a card button', async () => {
   const env = testEnv();
   const response = await worker.fetch(
     signedInteractionRequest({
@@ -88,8 +88,13 @@ test('/spotify login returns an authorization URL', async () => {
   const payload = await response.json();
   assert.equal(payload.type, 4);
   assert.equal(payload.data.flags, 64);
-  assert.match(payload.data.content, /https:\/\/accounts\.spotify\.com\/authorize/);
-  assert.match(payload.data.content, /code_challenge_method=S256/);
+  assert.equal(payload.data.content, '');
+  assert.equal(payload.data.embeds[0].title, 'Spotify authorization');
+  const button = payload.data.components[0].components[0];
+  assert.equal(button.style, 5);
+  assert.equal(button.label, 'Authorize Spotify');
+  assert.match(button.url, /https:\/\/accounts\.spotify\.com\/authorize/);
+  assert.match(button.url, /code_challenge_method=S256/);
 });
 
 test('Spotify callback accepts legacy raw OAuth verifier state', async () => {
